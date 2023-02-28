@@ -1,0 +1,26 @@
+.container-login {
+  height: 100vh;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: center;
+  background: transparent;
+}
+
+.confirm-class .ant-modal-confirm-content {
+  width: 100%;
+}
+#topology-graph-wrapper {
+  width: 100%;
+  height: 100%;
+}
+.cutomBadge .ant-badge-status-dot {
+  position: relative;
+  top: -2px !important;
+  display: inline-block;
+  width: 15px !important;
+  height: 15px !important;
+  vertical-align: middle;
+  border-radius: 50%;
+}

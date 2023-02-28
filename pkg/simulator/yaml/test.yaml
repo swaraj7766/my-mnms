@@ -1,0 +1,6 @@
+environments:
+  simulator_group1: 
+      number: 10
+      type: "EH7506"
+      startPreFixIp: "192.168.5.23/24"
+      startMacAddress: "00-60-e9-18-01-01"

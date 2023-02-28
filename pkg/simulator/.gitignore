@@ -1,0 +1,7 @@
+*.dld
+*.exe
+# Dependency directories (remove the comment below to include it)
+vender/
+*.json
+*.test
+TestResult

@@ -1,0 +1,27 @@
+#exmaple array
+#type: EH7506,EH7508,EH7512,EH7520,EHG750x   
+# environments:
+  # simulator_group: #create once device using macAddress:"00-60-e9-18-01-99"
+      # type: "EH7520"
+      # startPreFixIp: "192.168.5.23/24"
+      # startMacAddress: "00-60-e9-18-01-99"
+  # simulator_group1: #create five of devices use random macAddress
+      # number: 5
+      # type: "EH7508"
+      # startPreFixIp: "192.168.6.23/24"
+  # simulator_group2: #create three of devices with macAddress increased from "00-60-e9-18-05-01"
+      # number: 3
+      # type: "EH7508"
+      # startPreFixIp: "192.168.7.23/24"
+      # startMacAddress: "00-60-e9-18-05-01"
+environments:
+  simulator_group1: 
+      number: 10
+      type: "EH7506"
+      startPreFixIp: "192.168.6.1/24"
+      startMacAddress: "00-60-e9-18-01-01"
+  simulator_group2: 
+      number: 10
+      type: "EH7508"
+      startPreFixIp: "192.168.7.1/24"
+      startMacAddress: "00-60-e9-18-0a-01"
