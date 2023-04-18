@@ -710,5 +710,6 @@ Cargo.lock
 pki/
 
 # env data
-emails.json
-pass
+config.json
+
+

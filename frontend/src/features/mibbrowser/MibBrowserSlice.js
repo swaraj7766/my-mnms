@@ -1,38 +1,40 @@
-import { createAsyncThunk, createSlice, nanoid } from "@reduxjs/toolkit";
+import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import protectedApis from "../../utils/apis/protectedApis";
 
 export const GetMibBrowserData = createAsyncThunk(
   "mibBrowser/GetMibBrowser",
-  async (_, thunkAPI) => {
+  async (params, thunkAPI) => {
     try {
-      const params = thunkAPI.getState().mibmgmt;
-      const response = await protectedApis.post("/v1/mib/manage", {
-        id: nanoid(8),
-        type: "postMIB",
-        parameters: [
-          {
-            ip_address: params.ip_address,
-            oid: params.oid,
-            operation: params.operation,
-            value: params.value,
-            valueType: params.valueType,
-            port: params.port,
-            community:
-              params.operation === "set"
-                ? params.writeCommunity
-                : params.readCommunity,
-            version: params.version,
-            maxRepetors: params.maxRepetors,
-          },
-        ],
-        metadata: {},
-      });
+      const response = await protectedApis.post("/api/v1/commands", params);
       const data = await response.data;
-      let responseResult = data.result;
-      if (response.status === 200 && responseResult.success) {
+      let responseResult = data;
+      if (response.status === 200) {
         return responseResult;
       } else {
-        return thunkAPI.rejectWithValue(responseResult.message);
+        return thunkAPI.rejectWithValue("snmp mib command failed !");
+      }
+    } catch (e) {
+      if (e.response && e.response.statusText !== "") {
+        return thunkAPI.rejectWithValue(e.response.statusText);
+      } else return thunkAPI.rejectWithValue(e.message);
+    }
+  }
+);
+
+export const GetMibCommandResult = createAsyncThunk(
+  "mibBrowser/GetmibCommandResult",
+  async (params, thunkAPI) => {
+    try {
+      const response = await protectedApis.get(
+        `/api/v1/commands?cmd=${params}`,
+        params
+      );
+      const data = await response.data;
+      let responseResult = data;
+      if (response.status === 200) {
+        return responseResult;
+      } else {
+        return thunkAPI.rejectWithValue("Result mib command failed !");
       }
     } catch (e) {
       if (e.response && e.response.statusText !== "") {
@@ -45,7 +47,9 @@ export const GetMibBrowserData = createAsyncThunk(
 const MibBrowserSlice = createSlice({
   name: "mibBrowser",
   initialState: {
-    mibData: [],
+    mibBrowserStatus: "in_progress",
+    message: "",
+    cmdResponse: [],
     ip_address: "",
     oid: ".1.3",
     operation: "get",
@@ -56,8 +60,6 @@ const MibBrowserSlice = createSlice({
     writeCommunity: "private",
     version: "v2c",
     maxRepetors: "20",
-    mibBrowserStatus: "",
-    message: "",
   },
   reducers: {
     setMibIp: (state, { payload }) => {
@@ -105,21 +107,23 @@ const MibBrowserSlice = createSlice({
       state.version = "v2c";
     },
   },
-  extraReducers: {
-    [GetMibBrowserData.pending]: (state, { payload }) => {
-      state.mibData = [];
-      state.mibBrowserStatus = "loading";
-      state.message = "";
-    },
-    [GetMibBrowserData.fulfilled]: (state, { payload }) => {
-      state.mibData = payload?.data;
-      state.mibBrowserStatus = payload?.success ? "success" : "failed";
-      state.message = payload?.message;
-    },
-    [GetMibBrowserData.rejected]: (state, { payload }) => {
-      state.mibBrowserStatus = "failed";
-      state.message = payload;
-    },
+  extraReducers: (builder) => {
+    builder
+      .addCase(GetMibBrowserData.fulfilled, (state, { payload }) => {
+        state.mibBrowserStatus = "success";
+        state.message = "snmp mib command success !";
+        state.cmdResponse = Object.keys(payload);
+      })
+      .addCase(GetMibBrowserData.pending, (state, { payload }) => {
+        state.mibBrowserStatus = "in_progress";
+        state.message = "";
+        state.cmdResponse = [];
+      })
+      .addCase(GetMibBrowserData.rejected, (state, { payload }) => {
+        state.mibBrowserStatus = "failed";
+        state.message = payload;
+        state.cmdResponse = [];
+      });
   },
 });
 
@@ -140,7 +144,7 @@ export const {
 
 export const mibmgmtSelector = (state) => {
   const {
-    mibData,
+    cmdResponse,
     mibBrowserStatus,
     message,
     ip_address,
@@ -155,7 +159,7 @@ export const mibmgmtSelector = (state) => {
     maxRepetors,
   } = state.mibmgmt;
   return {
-    mibData,
+    cmdResponse,
     mibBrowserStatus,
     message,
     ip_address,

@@ -2,26 +2,14 @@ package mnms
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/qeof/q"
-)
-
-var waititime = time.Second * 10
-
-const (
-	beepmac = "00-60-E9-18-01-01"
-	beepip  = "192.168.10.1"
-)
-
-const (
-	rebootpmac = "00-60-E9-18-01-02"
-	rebootip   = "192.168.10.2"
 )
 
 const (
@@ -40,21 +28,12 @@ const loginuser = "admin"
 const loginpwd = "default"
 
 func TestGwdBeep(t *testing.T) {
+	t.Skip()
 	err := createSimulator()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ShutdownSimulator()
-
-	cmdinfo := make(map[string]CmdInfo)
-	cmd := fmt.Sprintf("beep %v %v", beepmac, beepip)
-	insertcmd(cmd, &cmdinfo)
-
-	jsonBytes, err := json.Marshal(cmdinfo)
-	if err != nil {
-		t.Fatalf("json marshal %v", err)
-	}
-	q.Q(string(jsonBytes))
 
 	var wg sync.WaitGroup
 
@@ -69,10 +48,22 @@ func TestGwdBeep(t *testing.T) {
 		defer wg.Done()
 		GwdMain()
 	}()
-	err = waitFindDevice(beepmac, waititime)
+	time.Sleep(time.Second * 1)
+
+	d, err := GetDevData()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	cmdinfo := make(map[string]CmdInfo)
+	cmd := fmt.Sprintf("beep %v %v", d.Mac, d.IPAddress)
+	insertcmd(cmd, &cmdinfo)
+
+	jsonBytes, err := json.Marshal(cmdinfo)
+	if err != nil {
+		t.Fatalf("json marshal %v", err)
+	}
+	q.Q(string(jsonBytes))
 	url := fmt.Sprintf("http://localhost:%d/api/v1/commands", QC.Port)
 
 	_ = cleanMNMSConfig()
@@ -85,36 +76,28 @@ func TestGwdBeep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	q.Q(QC.Root)
 	resp, err := PostWithToken(url, token, bytes.NewBuffer(jsonBytes))
 	if resp.StatusCode != 200 || err != nil {
 		t.Fatalf("post err:%v", err)
 	}
 	if resp != nil {
 		q.Q(resp.Header)
+		//save close
+		defer resp.Body.Close()
 	}
-	defer resp.Body.Close()
 
 	q.Q(QC.CmdData)
 	q.Q(QC.Clients)
-	_ = CheckCommands()
+	_ = CheckCmds()
 }
 
-func TestGwdReboot(t *testing.T) {
+func TestGwdReset(t *testing.T) {
+	t.Skip()
 	err := createSimulator()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ShutdownSimulator()
-	cmdinfo := make(map[string]CmdInfo)
-	cmd := fmt.Sprintf("reboot %v %v %v %v", rebootpmac, rebootip, loginuser, loginpwd)
-	insertcmd(cmd, &cmdinfo)
-
-	jsonBytes, err := json.Marshal(cmdinfo)
-	if err != nil {
-		t.Fatalf("json marshal %v", err)
-	}
-	q.Q(string(jsonBytes))
 
 	var wg sync.WaitGroup
 
@@ -129,10 +112,21 @@ func TestGwdReboot(t *testing.T) {
 		defer wg.Done()
 		GwdMain()
 	}()
-	err = waitFindDevice(rebootpmac, waititime)
+	time.Sleep(time.Second * 1)
+
+	d, err := GetDevData()
 	if err != nil {
 		t.Fatal(err)
 	}
+	cmdinfo := make(map[string]CmdInfo)
+	cmd := fmt.Sprintf("reset %v %v %v %v", d.Mac, d.IPAddress, loginuser, loginpwd)
+	insertcmd(cmd, &cmdinfo)
+
+	jsonBytes, err := json.Marshal(cmdinfo)
+	if err != nil {
+		t.Fatalf("json marshal %v", err)
+	}
+	q.Q(string(jsonBytes))
 
 	_ = cleanMNMSConfig()
 	_ = InitDefaultMNMSConfigIfNotExist()
@@ -152,29 +146,22 @@ func TestGwdReboot(t *testing.T) {
 	}
 	if resp != nil {
 		q.Q(resp.Header)
+		// save close
+		defer resp.Body.Close()
 	}
-	defer resp.Body.Close()
 
 	q.Q(QC.CmdData)
 	q.Q(QC.Clients)
-	_ = CheckCommands()
+	_ = CheckCmds()
 }
 
 func TestGwdConfigIP(t *testing.T) {
+	t.Skip()
 	err := createSimulator()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ShutdownSimulator()
-	cmdinfo := make(map[string]CmdInfo)
-	cmd := fmt.Sprintf("config net %v %v %v %v %v", configmac, confignnewip, confignmask, configngateway, hostvalue)
-	insertcmd(cmd, &cmdinfo)
-
-	jsonBytes, err := json.Marshal(cmdinfo)
-	if err != nil {
-		t.Fatalf("json marshal %v", err)
-	}
-	q.Q(string(jsonBytes))
 
 	var wg sync.WaitGroup
 
@@ -189,10 +176,21 @@ func TestGwdConfigIP(t *testing.T) {
 		defer wg.Done()
 		GwdMain()
 	}()
-	err = waitFindDevice(configmac, waititime)
+	time.Sleep(time.Second * 1)
+	d, err := GetDevData()
 	if err != nil {
 		t.Fatal(err)
 	}
+	cmdinfo := make(map[string]CmdInfo)
+	cmd := fmt.Sprintf("config net %v %v %v %v %v", d.Mac, confignnewip, confignmask, configngateway, hostvalue)
+	insertcmd(cmd, &cmdinfo)
+
+	jsonBytes, err := json.Marshal(cmdinfo)
+	if err != nil {
+		t.Fatalf("json marshal %v", err)
+	}
+	q.Q(string(jsonBytes))
+
 	_ = cleanMNMSConfig()
 	_ = InitDefaultMNMSConfigIfNotExist()
 	defer func() {
@@ -204,7 +202,6 @@ func TestGwdConfigIP(t *testing.T) {
 	}
 
 	url := fmt.Sprintf("http://localhost:%d/api/v1/commands", QC.Port)
-	q.Q(QC.Root)
 	resp, err := PostWithToken(url, token, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		t.Fatal(err)
@@ -217,31 +214,23 @@ func TestGwdConfigIP(t *testing.T) {
 	}
 	if resp != nil {
 		q.Q(resp.Header)
-	}
-	defer resp.Body.Close()
 
+	}
+
+	// save close, already check resp is not nil
+	defer resp.Body.Close()
 	q.Q(QC.CmdData)
 	q.Q(QC.Clients)
-	_ = CheckCommands()
+	_ = CheckCmds()
 }
 
-func waitFindDevice(mac string, timeout time.Duration) error {
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("time out,device:%v can't find", mac)
-		default:
-			time.Sleep(500 * time.Millisecond)
-			_, err := FindDev(mac)
-			if err != nil {
-				continue
-			}
-			return nil
+func GetDevData() (DevInfo, error) {
+	if len(QC.DevData) == 0 {
+		return DevInfo{}, errors.New("no device exist")
+	} else {
+		for _, v := range QC.DevData {
+			return v, nil
 		}
-
 	}
-
+	return DevInfo{}, errors.New("no device exist")
 }

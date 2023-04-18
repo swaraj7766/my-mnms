@@ -1,28 +1,24 @@
 package simulator
 
 import (
-	"github.com/sirupsen/logrus"
+	"github.com/qeof/q"
 )
 
 // SnmpRun run snmp
-func (a *AtopGwdClient) SnmpRun(ip string) {
-	logrus.Printf("snmp:%v Run", a.ModelInfo.IPAddress)
+func (a *AtopGwdClient) SnmpRun(ip string) error {
+	q.Q("snmp:", a.ModelInfo.IPAddress, " Run")
 	go func() {
 		err := a.snmp.Run(ip)
 		if err != nil {
-			logrus.Fatal(err)
+			q.Q(err)
 		}
 	}()
-}
-
-// SnmpRun run snmp
-func (a *AtopGwdClient) SetLogger(log *logrus.Logger) {
-	a.snmp.SetLogger(log)
+	return nil
 }
 
 // SnmpShutdown  shutdonw snmp
 func (a *AtopGwdClient) SnmpShutdown() {
-	logrus.Printf("snmp:%v Shutdown", a.ModelInfo.IPAddress)
+	q.Q("snmp:", a.ModelInfo.IPAddress, " Shutdown")
 	a.snmp.Shutdown()
 }
 

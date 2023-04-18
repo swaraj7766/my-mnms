@@ -1,8 +1,6 @@
 package atopmib
 
 import (
-	"log"
-
 	"mnms/pkg/simulator/devicetype"
 )
 
@@ -17,6 +15,5 @@ func OidType(mode devicetype.Simulator_type) uint {
 	case devicetype.EH7520, devicetype.EHG750x:
 		return 21
 	}
-	log.Fatal("no type")
-	return 0
+	return 21
 }

@@ -6,11 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/gopacket"
@@ -25,7 +22,10 @@ const timeout = 1 * time.Millisecond
 //
 // if run on linux please use root
 func ArpCheckExisted(ip string) (bool, error) {
-	ifaces, _ := GetAllInterface()
+	ifaces, _, err := GetAllInterface()
+	if err != nil {
+		return false, err
+	}
 	for _, iface := range ifaces {
 		if r, err := arpCheck(&iface, net.ParseIP(ip)); err != nil {
 			return false, err
@@ -43,10 +43,10 @@ func ArpCheckExisted(ip string) (bool, error) {
 }
 
 // GetAllInterface get  all of Interface and name
-func GetAllInterface() ([]net.Interface, string) {
+func GetAllInterface() ([]net.Interface, string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Fatal(err)
+		return []net.Interface{}, "", err
 	}
 	var ifs []net.Interface
 	var summary string
@@ -54,7 +54,7 @@ func GetAllInterface() ([]net.Interface, string) {
 		if v.Flags&net.FlagUp == net.FlagUp && v.Flags&net.FlagLoopback != net.FlagLoopback {
 			addrs, err := v.Addrs()
 			if err != nil { // get addresses
-				return nil, ""
+				return []net.Interface{}, "", err
 			}
 			for _, addr := range addrs { // get ipv4 address
 				if ipv4Addr := addr.(*net.IPNet).IP.To4(); ipv4Addr != nil {
@@ -67,7 +67,7 @@ func GetAllInterface() ([]net.Interface, string) {
 		}
 	}
 
-	return ifs, summary
+	return ifs, summary, nil
 }
 
 func addSummary(summary string, newline string) string {
@@ -126,12 +126,17 @@ func arpCheck(iface *net.Interface, ip net.IP) (bool, error) {
 	if addrs, err := iface.Addrs(); err != nil {
 		return false, err
 	} else {
+		//check self
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok {
+				if net.IP.Equal(ipnet.IP.To4(), ip.To4()) {
+					return true, nil
+				}
+			}
+		}
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok {
 				if ip4 := ipnet.IP.To4(); ip4 != nil {
-					if net.IP.Equal(ip4, ip.To4()) {
-						return true, nil
-					}
 					addr = &net.IPNet{
 						IP:   ip4,
 						Mask: ipnet.Mask[len(ipnet.Mask)-4:],
@@ -175,7 +180,7 @@ func arpCheck(iface *net.Interface, ip net.IP) (bool, error) {
 	///for {
 	// Write our scan packets out to the handle.
 	if err := writeARP(handle, iface, addr, ip); err != nil {
-		log.Printf("error writing packets on %v: %v", iface.Name, err)
+		q.Q("error writing packets on ", iface.Name, "err:", err)
 		return false, err
 	}
 	<-end
@@ -253,41 +258,4 @@ func writeARP(handle *pcap.Handle, iface *net.Interface, addr *net.IPNet, dest n
 	}
 	//}
 	return nil
-}
-
-// ArpIntervalCmd set arp interval in seconds, default 60
-// range 1-3600
-func ArpIntervalCmd(cmdinfo *CmdInfo) *CmdInfo {
-	cmd := cmdinfo.Command
-	ws := strings.Split(cmd, " ")
-	if len(ws) < 3 {
-		q.Q("error", len(ws))
-		cmdinfo.Status = "error: invalid command"
-		return cmdinfo
-	}
-	interval, err := strconv.Atoi(ws[2])
-	if err != nil {
-		q.Q(err)
-		cmdinfo.Status = fmt.Sprintf("error: %v", err)
-		return cmdinfo
-	}
-	if interval < 1 || interval > 3600 {
-		cmdinfo.Status = "error: interval range 1-3600 seconds"
-		return cmdinfo
-	}
-	QC.ArpInterval = interval
-	cmdinfo.Result = fmt.Sprintf("set interval to %v seconds", interval)
-	cmdinfo.Status = "ok"
-	return cmdinfo
-}
-
-func ArpCmd(cmdinfo *CmdInfo) *CmdInfo {
-	cmd := cmdinfo.Command
-
-	if strings.HasPrefix(cmd, "arp interval") {
-		return ArpIntervalCmd(cmdinfo)
-	}
-
-	cmdinfo.Status = "error: not found command"
-	return cmdinfo
 }

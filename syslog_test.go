@@ -14,11 +14,6 @@ import (
 	"github.com/qeof/q"
 )
 
-func init() {
-	q.O = "stderr"
-	q.P = ".*"
-}
-
 func killNmsctlProcesses() {
 	var cmd *exec.Cmd
 	q.Q("killing nmnsctl processes")

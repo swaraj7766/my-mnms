@@ -13,8 +13,6 @@ import (
 
 	"mnms/pkg/simulator/devicetype"
 
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
 	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/transform"
 )
@@ -188,33 +186,4 @@ func SelectPacket(packet []byte) statue {
 	}
 
 	return none
-}
-
-// SetLogLevel sets service's log level
-func SetLogLevel(cmd *cobra.Command) *logrus.Logger {
-	l := logrus.New()
-	if cmd == nil {
-		logrus.Error("set log level fail: cmd is nil")
-		return nil
-	}
-	debug, _ := cmd.Flags().GetBool("debug")
-
-	if debug {
-		fmt.Println("Running as debug mode")
-		logrus.SetLevel(logrus.DebugLevel)
-		l.SetLevel(logrus.DebugLevel)
-		return l
-	}
-
-	info, _ := cmd.Flags().GetBool("verb")
-	if info {
-		fmt.Println("Running as verb mode")
-		logrus.SetLevel(logrus.InfoLevel)
-		l.SetLevel(logrus.InfoLevel)
-		return l
-	}
-	fmt.Println("Running as default mode")
-	logrus.SetLevel(logrus.ErrorLevel)
-	l.SetLevel(logrus.ErrorLevel)
-	return l
 }

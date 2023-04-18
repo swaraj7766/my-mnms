@@ -12,12 +12,20 @@ export const loginUser = createAsyncThunk(
       });
       let data = await response.data;
       if (response.status === 200) {
-        console.log(data);
-        sessionStorage.setItem("nmstoken", data.token);
-        sessionStorage.setItem("nmsuser", data.user);
-        ProtectedApis.defaults.headers.common[
-          "Authorization"
-        ] = `Bearer ${data.token}`;
+        if (data.token) {
+          sessionStorage.setItem("nmstoken", data.token);
+          sessionStorage.setItem("nmsuser", data.user);
+          sessionStorage.setItem("nmsuserrole", data.role);
+          sessionStorage.removeItem("sessionid");
+
+          ProtectedApis.defaults.headers.common[
+            "Authorization"
+          ] = `Bearer ${data.token}`;
+        }
+        // if sessionID is not empty, write to sessionIDSpan
+        if (data.sessionID) {
+          sessionStorage.setItem("sessionid", data.sessionID);
+        }
         return data;
       } else {
         return thunkAPI.rejectWithValue(data);

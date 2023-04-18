@@ -109,9 +109,9 @@ func ReadUntil(reader *bufio.Reader, conn net.Conn, data *[]byte, delim byte) (n
 			break
 		}
 		tmp = append(tmp, b)
-		n, err := conn.Write(tmp)
+		_, err = conn.Write(tmp)
 		if err != nil {
-			return n, err
+			return 0, err
 		}
 
 		*data = append(*data, b)
@@ -125,26 +125,49 @@ func ReadUntil(reader *bufio.Reader, conn net.Conn, data *[]byte, delim byte) (n
 // handle communication
 func handleTtlSession(conn net.Conn, ts *TelnetServer) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	err := conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err != nil {
+		q.Q(err)
+		return
+	}
 
 	var login []byte
 	var password []byte
 	var adminSuccess int
 	reader := bufio.NewReader(conn)
-	_, _ = conn.Write([]byte{0xff, 0xfd, 0x03})
-	_, _ = conn.Write([]byte{
+	_, err = conn.Write([]byte{0xff, 0xfd, 0x03})
+	if err != nil {
+		q.Q(err)
+		return
+	}
+
+	_, err = conn.Write([]byte{
 		0xff, 0xfb, 0x18,
 		0xff, 0xfb, 0x1f,
 		0xff, 0xfb, 0x20,
 		0xff, 0xfb, 0x21,
 		0xff, 0xfb, 0x22})
+	if err != nil {
+		q.Q(err)
+		return
+	}
+
 	for {
 
-		_, _ = conn.Write([]byte("\r\n" + "Username: "))
+		_, err = conn.Write([]byte("\r\n" + "Username: "))
+		if err != nil {
+			q.Q(err)
+			return
+		}
 		//n, _ := conn.Read(login)
 		var n int
 		adminSuccess = 0
-		n, _ = ReadUntil(reader, conn, &login, '\n')
+		n, err = ReadUntil(reader, conn, &login, '\n')
+		if err != nil {
+			q.Q(err)
+			return
+		}
+
 		if bytes.Compare(login[:n], []byte(ts.username+"\r\n")) != 0 {
 			q.Q("invalid login ", login[:n])
 		} else {
@@ -152,9 +175,19 @@ func handleTtlSession(conn net.Conn, ts *TelnetServer) {
 			adminSuccess = 1
 		}
 		// Password
-		_, _ = conn.Write([]byte("\r\n" + "Password: "))
+		_, err = conn.Write([]byte("\r\n" + "Password: "))
+		if err != nil {
+			q.Q(err)
+			return
+		}
+
 		//n, _ = conn.Read(password)
-		n, _ = ReadUntil(reader, conn, &password, '\n')
+		n, err = ReadUntil(reader, conn, &password, '\n')
+		if err != nil {
+			q.Q(err)
+			return
+		}
+
 		if bytes.Compare(password[:n], []byte(ts.password+"\r\n")) != 0 {
 			q.Q("invalid password ", password[:n])
 		} else if adminSuccess == 1 {
@@ -166,8 +199,18 @@ func handleTtlSession(conn net.Conn, ts *TelnetServer) {
 		adminSuccess = 0
 	}
 	// Write banner
-	_, _ = conn.Write([]byte("\r\n\r\nTest " + ts.modelname + " CLI\r\n"))
-	_, _ = conn.Write([]byte("switch# "))
+	_, err = conn.Write([]byte("\r\n\r\nTest " + ts.modelname + " CLI\r\n"))
+	if err != nil {
+		q.Q(err)
+		return
+	}
+
+	_, err = conn.Write([]byte("switch# "))
+	if err != nil {
+		q.Q(err)
+		return
+	}
+
 	// telnet cmd
 	var dirname string
 	var inDir string = "switch"
@@ -177,43 +220,98 @@ func handleTtlSession(conn net.Conn, ts *TelnetServer) {
 		//var err error
 		//str, err := reader.ReadString('\n')
 		//fmt.Printf("%v %d\n", str, n)
-		n, _ = ReadUntil(reader, conn, &str, '\n')
+		n, err = ReadUntil(reader, conn, &str, '\n')
+		if err != nil {
+			q.Q(err)
+			return
+		}
 
 		if bytes.Compare(str[:n], []byte("config\r\n")) == 0 {
 			dirname = "(config)"
 			inDir = "config"
 			//fmt.Println(string(str[:n]))
 			//fmt.Println("switch" + dirname + "# ")
-			_, _ = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			_, err = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
 		} else if bytes.Compare(str[:n], []byte("snmp enable\r\n")) == 0 && inDir == "config" {
 			//fmt.Println(string(str[:n]))
 			//fmt.Println("switch" + "(config)# ")
-			_, _ = conn.Write([]byte("\r\n" + "snmp enable"))
-			_, _ = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			_, err = conn.Write([]byte("\r\n" + "snmp enable"))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
+			_, err = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
 			//conn.Close()
 			//break
 		} else if bytes.Compare(str[:n], []byte("no snmp enable\r\n")) == 0 && inDir == "config" {
 			//fmt.Println(string(str[:n]))
 			//fmt.Println("switch" + "(config)# ")
-			_, _ = conn.Write([]byte("\r\n" + "snmp disable"))
-			_, _ = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			_, err = conn.Write([]byte("\r\n" + "snmp disable"))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
+			_, err = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
 			//conn.Close()
 			//break
+		} else if bytes.Compare(str[:n], []byte("show snmp community\r\n")) == 0 && inDir == "config" {
+			msg := "Community Name          Access right\r\n" + "-----------------------------------------\r\n" + "public                  read-all-only\r\n" + "private                 read-write-all\r\n%"
+
+			_, err = conn.Write([]byte("\r\n" + msg))
+			if err != nil {
+				q.Q(err)
+				return
+			}
 		} else if bytes.Compare(str[:n], []byte("exit\r\n")) == 0 {
 			inDir = "switch"
 			if dirname == "" {
 				//fmt.Println(string(str[:n]))
-				conn.Close()
+				err := conn.Close()
+				if err != nil {
+					q.Q(err)
+				}
 				break
 			} else {
 				dirname = ""
 				fmt.Println(string(str[:n]))
 				//fmt.Println("switch" + dirname + "# ")
-				_, _ = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+				_, err = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+				if err != nil {
+					q.Q(err)
+					return
+				}
+
 			}
 		} else {
-			_, _ = conn.Write([]byte("\r\n" + "Command not found"))
-			_, _ = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			_, err = conn.Write([]byte("\r\n" + "% Unknown command."))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
+			_, err = conn.Write([]byte("\r\n" + "switch" + dirname + "# "))
+			if err != nil {
+				q.Q(err)
+				return
+			}
+
 		}
 		str = str[0:0]
 	}

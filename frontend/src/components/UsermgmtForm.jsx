@@ -1,8 +1,22 @@
 import { Modal, Form, Input, Select } from "antd";
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
+import { useSelector } from "react-redux";
+import { usermgmtSelector } from "../features/usermgmt/usermgmtSlice";
 
-const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
+const passwordPattern =
+  /^(?=.*\d)(?=.*[A-Z])(?=.*[a-z])(?=.*[a-zA-Z!#$@%&? "])[a-zA-Z0-9!#$@%&?]{8,20}$/;
+
+const UsermgmtForm = ({
+  open,
+  onCreate,
+  onCancel,
+  loadingGenPass,
+  isEdit,
+  onEdit,
+}) => {
   const [form] = Form.useForm();
+  const { editUserData } = useSelector(usermgmtSelector);
+
   useEffect(() => {
     form.setFieldsValue({ role: "user" });
     return () => {
@@ -11,14 +25,16 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => form.resetFields(), [editUserData]);
+
   return (
     <Modal
       open={open}
       width={400}
       forceRender
       maskClosable={false}
-      title="Add new user"
-      okText="Add"
+      title={isEdit ? "Edit user" : "Add new user"}
+      okText={isEdit ? "EDIT" : "Add"}
       cancelText="Cancel"
       confirmLoading={loadingGenPass}
       onCancel={() => {
@@ -30,7 +46,11 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
           .validateFields()
           .then((values) => {
             console.log(values);
-            onCreate(values);
+            if (isEdit) {
+              onEdit(values);
+            } else {
+              onCreate(values);
+            }
             form.resetFields();
           })
           .catch((info) => {
@@ -43,6 +63,7 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
         <Form.Item
           name="name"
           label="Username"
+          initialValue={editUserData.name}
           rules={[
             {
               required: true,
@@ -50,11 +71,12 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
             },
           ]}
         >
-          <Input />
+          <Input disabled={isEdit} />
         </Form.Item>
         <Form.Item
           name="email"
           label="Email"
+          initialValue={editUserData.email}
           rules={[
             {
               required: true,
@@ -76,6 +98,11 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
               required: true,
               message: "Please input the password!",
             },
+            {
+              pattern: passwordPattern,
+              message:
+                "password must have 8-20 characters, at least one uppercase one lowercase one digit one special character",
+            },
           ]}
         >
           <Input.Password />
@@ -84,6 +111,7 @@ const UsermgmtForm = ({ open, onCreate, onCancel, loadingGenPass }) => {
         <Form.Item
           name="role"
           label="Role"
+          initialValue={editUserData.role}
           rules={[
             {
               required: true,

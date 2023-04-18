@@ -1,9 +1,9 @@
 import axios from "axios";
 
 const baseURL =
-  process.env.NODE_ENV === "production"
-    ? process.env.REACT_APP_BASE_URL
-    : process.env.REACT_APP_BASE_URL;
+  localStorage.getItem("nms-base-URL") === null
+    ? "http://localhost:27182"
+    : `${JSON.parse(localStorage.getItem("nms-base-URL"))}`;
 
 const instance = axios.create({
   baseURL: baseURL,

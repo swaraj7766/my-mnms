@@ -13,7 +13,7 @@ export const getTopologyData = createAsyncThunk(
       const response = await protectedApis.get("/api/v1/topology", {});
       const data = await response.data;
       if (response.status === 200) {
-        console.log(data);
+        console.log("topology data", data);
         return data;
       } else {
         return thunkAPI.rejectWithValue(data);

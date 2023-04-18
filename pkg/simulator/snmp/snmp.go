@@ -19,7 +19,6 @@ import (
 	"mnms/pkg/simulator/snmp/mib/transmissionmib"
 	"mnms/pkg/simulator/snmp/mib/udpmib"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slayercat/GoSNMPServer"
 	"github.com/slayercat/GoSNMPServer/mibImps/dismanEventMib"
 	"github.com/slayercat/GoSNMPServer/mibImps/ucdMib"
@@ -73,13 +72,10 @@ func (s *Snmp) Run(ip string) error {
 	s.server = GoSNMPServer.NewSNMPServer(s.agent)
 	err := s.server.ListenUDP("udp", addr)
 	if err != nil {
-		logrus.Fatal(err)
+		return err
 	}
 
 	return s.server.ServeForever()
-}
-func (s *Snmp) SetLogger(log *logrus.Logger) {
-	s.agent.Logger = log
 }
 
 func (s *Snmp) Shutdown() {

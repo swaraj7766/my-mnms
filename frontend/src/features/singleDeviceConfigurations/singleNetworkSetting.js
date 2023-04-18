@@ -49,7 +49,7 @@ const singleNetworkSetting = createSlice({
       state.gateway = payload.gateway;
       state.hostname = payload.hostname;
       state.model = payload.modelname;
-      state.isDHCP = payload.isDHCP;
+      state.isDHCP = payload.isdhcp;
       state.visible = true;
     },
     closeNetworkSettingDrawer: (state, { payload }) => {

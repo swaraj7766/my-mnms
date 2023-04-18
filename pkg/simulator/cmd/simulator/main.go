@@ -3,7 +3,7 @@ package main
 import (
 	"mnms/pkg/simulator/internal/app"
 
-	"github.com/bobbae/q"
+	"github.com/qeof/q"
 )
 
 func main() {

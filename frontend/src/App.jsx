@@ -4,6 +4,7 @@ import AppRoutes from "./utils/routes/AppRoutes";
 import { ConfigProvider } from "antd";
 
 function App() {
+  console.log();
   return (
     <CustomThemeContextProvider>
       <GlobalStyle />

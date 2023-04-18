@@ -1,19 +1,21 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import protectedApis from "../../utils/apis/protectedApis";
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 export const RequestEventlog = createAsyncThunk(
   "eventLogSlice/RequestEventlog",
   async (params, thunkAPI) => {
     try {
       const response = await protectedApis.get("/api/v1/syslogs", {
         params: {
-          start: params.start,
-          end: params.end,
           number: params.number,
         },
       });
       const data = await response.data;
+      console.log(data);
       if (response.status === 200) {
+        await sleep(2000);
         return data;
       } else {
         return thunkAPI.rejectWithValue("Config read syslog failed !");
@@ -31,8 +33,13 @@ const eventLogSlice = createSlice({
   initialState: {
     eventLogData: [],
     fetching: false,
+    firmwareNotification: "",
   },
-  reducers: {},
+  reducers: {
+    showFirmwareNotification: (state, { payload }) => {
+      state.firmwareNotification = payload.message;
+    },
+  },
   extraReducers: (builder) => {
     builder
       .addCase(RequestEventlog.fulfilled, (state, { payload }) => {
@@ -50,10 +57,11 @@ const eventLogSlice = createSlice({
   },
 });
 
-export const {} = eventLogSlice.actions;
+export const { showFirmwareNotification, hideFirmwareNotification } =
+  eventLogSlice.actions;
 export const eventLogSelector = (state) => {
-  const { eventLogData, fetching } = state.eventLog;
-  return { eventLogData, fetching };
+  const { eventLogData, fetching, firmwareNotification } = state.eventLog;
+  return { eventLogData, fetching, firmwareNotification };
 };
 
 export default eventLogSlice;

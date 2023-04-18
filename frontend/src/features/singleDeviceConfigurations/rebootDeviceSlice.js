@@ -6,9 +6,7 @@ export const RequestRebootDevice = createAsyncThunk(
   async (params, thunkAPI) => {
     try {
       const response = await protectedApis.post("/api/v1/commands", {
-        [`reboot ${params.mac}`]: {
-          command: `reboot ${params.mac} ${params.ipaddress} admin default`,
-        },
+        [`reset ${params.mac} ${params.ipaddress} admin default`]: {},
       });
       const data = await response.data;
       let responseResult = data;

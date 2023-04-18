@@ -27,6 +27,31 @@ func InsertLogKind(log *Log) {
 	QC.Logs[log.Kind] = *log
 }
 
+// Configure log setting.
+//
+// Usage : log off
+//
+// Usage : log pattern [pattern]
+//
+//	[pattern]     : log pattern
+//
+// Usage : log output [output]
+//
+//	[output]      : log output
+//
+// Usage : log syslog [facility] [severity] [tag] [message]
+//
+//	[facility]    : syslog facility
+//	[severity]    : syslog severity
+//	[tag]         : syslog was sent from tag what feature name
+//	[message]     : would send messages
+//
+// Example :
+//
+//	log off
+//	log pattern .*
+//	log output stderr
+//	log syslog 0 1 InsertDev "new device"
 func LogCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	if cmd == "log off" {

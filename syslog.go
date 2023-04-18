@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +20,16 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var TotalLogsReceived int
-var TotalLogsWritten int
+var (
+	TotalLogsReceived int
+	TotalLogsSent     int
+	TotalLogsDropped  int
+)
 
+/*
 const severityMask = 0x07
 const facilityMask = 0xf8
-
+*/
 /*
 Severity: RFC3164 page 9 -- numerical code 0 through 7
 
@@ -112,10 +116,11 @@ func StartSyslogServer() {
 		return
 	}
 	defer udpsock.Close()
-	buf := make([]byte, 1024*2)
 	// TODO when need:  tcp syslog service
 	for {
+		buf := make([]byte, 1024*2)
 		mlen, raddr, err := udpsock.ReadFrom(buf)
+		q.Q(len(buf))
 		if err != nil {
 			q.Q(err)
 		}
@@ -125,7 +130,19 @@ func StartSyslogServer() {
 			// Implement saving and rotating logs locally. Currently
 			// if there is no remote syslog server specified we drop the logs.
 			if QC.IsRoot {
-				SaveLog(string(buf[:mlen]))
+				_, _, err := parsingDataofSyslog(string(buf[:mlen]))
+				if err != nil {
+					f, b, err := SyslogParsePriority(string(buf[:mlen]))
+					if err != nil {
+						continue
+					}
+					p := fmt.Sprintf("<%v>", (f*8)+b)
+					m := strings.ReplaceAll(string(buf[:mlen]), p, "")
+					message := fmt.Sprintf("%v%v %v %v", p, time.Now().Format("Jan 02 15:04:05"), raddr.String(), m)
+					SaveLog(message)
+				} else {
+					SaveLog(string(buf[:mlen]))
+				}
 			}
 		}
 	}
@@ -133,7 +150,7 @@ func StartSyslogServer() {
 
 func InitRemoteSyslog() error {
 	if QC.RemoteSyslogServerAddr == "" {
-		return fmt.Errorf("Missing remote syslog server address")
+		return fmt.Errorf("%v", "Missing remote syslog server address")
 	}
 	if QC.RemoteSyslogServer != nil {
 		QC.RemoteSyslogServer.Close()
@@ -148,24 +165,6 @@ func InitRemoteSyslog() error {
 	return nil
 }
 
-/*
-	func InitRemoteSyslogTcp() error {
-		if QC.RemoteSyslogServerAddrTcp == "" {
-			return fmt.Errorf("Missing remote syslog serverf of tcp address")
-		}
-		if QC.RemoteSyslogServerTcp != nil {
-			QC.RemoteSyslogServerTcp.Close()
-		}
-		tcpsock, err := net.Dial("tcp", QC.RemoteSyslogServerAddrTcp)
-		if err != nil {
-			q.Q(err)
-			return err
-		}
-		QC.RemoteSyslogServerTcp = tcpsock
-
-		return nil
-	}
-*/
 func SyslogParsePriority(buf string) (int, int, error) {
 	if !strings.HasPrefix(buf, "<") {
 		return 0, 0, fmt.Errorf("no syslog priority start character")
@@ -192,17 +191,7 @@ func syslogInput(mlen int, buf []byte) error {
 		q.Q(err)
 		return err
 	}
-
-	if severity < 6 {
-		ix := strings.Index(bufStr, ">")
-		wsMessage := WebSocketMessage{
-			Kind:    "mnms_syslog",
-			Level:   severity,
-			Message: strings.TrimSpace(bufStr[ix+1:]),
-		}
-		QC.WebSocketMessageBroadcast <- wsMessage
-		q.Q("forward to ws", wsMessage)
-	}
+	SendSocketMessage(severity, bufStr)
 	if QC.RemoteSyslogServer == nil {
 		// First time, initialize client to remote syslog service
 		if err := InitRemoteSyslog(); err != nil {
@@ -223,60 +212,66 @@ func syslogInput(mlen int, buf []byte) error {
 		}
 	}
 
-	TotalLogsWritten++
-	q.Q(TotalLogsReceived, TotalLogsWritten, mlen, string(buf[:mlen]))
+	TotalLogsSent++
+	q.Q(TotalLogsReceived, TotalLogsSent, mlen, string(buf[:mlen]))
 	return nil
 }
 
 func SendSyslog(priority int, tag string, msg string) error {
+	timestamp := time.Now().Format(time.Stamp) // XXX not RFC3339
+	var name string
+	if len(QC.Name) == 0 {
+		name, _ = os.Hostname()
+	} else {
+		name = QC.Name
+	}
+	syslogmsg := fmt.Sprintf("<%d>%s %s %s: %s", priority, timestamp, name, tag, msg)
 	if QC.RemoteSyslogServerAddr == "" {
 		q.Q("Missing remote syslog server address, can't send syslog")
-		return errors.New("Missing remote syslog server address")
+		rootSaveLog(syslogmsg)
+		return fmt.Errorf("%v", "Missing remote syslog server address")
 	}
-	//reuse udp socket instead of open/close per message
+	// reuse udp socket instead of open/close per message
 	if QC.RemoteSyslogServer == nil {
 		udpSock, err := net.Dial("udp4", QC.RemoteSyslogServerAddr)
 		if err != nil {
-			q.Q(err)
+			rootSaveLog(syslogmsg)
+
 			return err
 		}
 		QC.RemoteSyslogServer = udpSock
 		// TODO close udpSock when program exits.
 	}
-	timestamp := time.Now().Format(time.Stamp) // XXX not RFC3339
-	syslogmsg := fmt.Sprintf("<%d>%s %s %s: %s", priority, timestamp, QC.Name, tag, msg)
+
 	_, err := QC.RemoteSyslogServer.Write([]byte(syslogmsg))
 	if err != nil {
 		q.Q(err)
+		rootSaveLog(syslogmsg)
 		return err
 	}
+	TotalLogsSent++
 	q.Q("sent syslog", string(msg))
 	return nil
 }
 
-var SyslogPath = path.Dir(path.Join(os.TempDir(), dir))
-
-const dir = "mnmslog"
-
-var file = path.Join(dir, "syslog.log")
-
-/*
-func mkdir() {
-
-
-
-	if _, err := os.Stat("/" + filepath.Join(dir)); os.IsNotExist(err) {
-		// make a pki directory, if not exist
-		if err := os.MkdirAll(filepath.Join(dir), os.ModeDir|0755); err != nil {
-			panic(err)
+func rootSaveLog(syslogmsg string) {
+	if QC.IsRoot {
+		_, severity, err := SyslogParsePriority(syslogmsg)
+		if err != nil {
+			q.Q(err)
 		}
+		SendSocketMessage(severity, syslogmsg)
+		SaveLog(syslogmsg)
+	} else {
+		TotalLogsDropped++
+		q.Q(TotalLogsDropped)
 	}
-}*/
+}
 
 var Logger *lumberjack.Logger
 
 func initLogger() *lumberjack.Logger {
-	filename := path.Join(QC.SyslogLocalPath, file)
+	filename := path.Join(QC.SyslogLocalPath)
 	Logger := &lumberjack.Logger{
 		Filename:   filename,
 		MaxSize:    int(QC.SyslogFileSize),
@@ -287,13 +282,13 @@ func initLogger() *lumberjack.Logger {
 	return Logger
 }
 
-//Save syslog to file
+// Save syslog to file
 func SaveLog(data string) {
-	//mkdir()
+	// mkdir()
 	if Logger == nil {
 		Logger = initLogger()
 	} else {
-		if Logger.Filename != (path.Join(QC.SyslogLocalPath, file)) || Logger.Compress != QC.SyslogCompress || Logger.MaxSize != int(QC.SyslogFileSize) {
+		if Logger.Filename != (path.Join(QC.SyslogLocalPath)) || Logger.Compress != QC.SyslogCompress || Logger.MaxSize != int(QC.SyslogFileSize) {
 			err := Logger.Close()
 			if err != nil {
 				q.Q(err)
@@ -302,20 +297,33 @@ func SaveLog(data string) {
 			q.Q("SaveLog,change local syslog paramter:", Logger)
 		}
 	}
-
+	re := regexp.MustCompile(`\r?\n`)
+	data = re.ReplaceAllString(data, " ")
 	_, err := Logger.Write([]byte(data))
 	if err != nil {
 		q.Q(err)
+		//remind user if file error
+		SendSocketMessage(LOG_ERR, fmt.Sprintf("can open:%v, please check file", Logger.Filename))
 		return
 	}
 	_, err = Logger.Write([]byte("\n"))
 	if err != nil {
 		q.Q(err)
+		//remind user if file error
+		SendSocketMessage(LOG_ERR, fmt.Sprintf("can open:%v, please check file", Logger.Filename))
 		return
 	}
-
 }
 
+// Configure local syslog path.
+//
+// Usage : config local syslog path [path]
+//
+//	[path]        : local syslog path
+//
+// Example :
+//
+//	config local syslog path tmp/log
 func SyslogSetPathCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -331,6 +339,15 @@ func SyslogSetPathCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
+// Configure local syslog file maximum size.
+//
+// Usage : config local syslog maxsize [maxsize]
+//
+//	[maxsize]     : local syslog file maxsize size
+//
+// Example :
+//
+//	config local syslog maxsize 100
 func SyslogSetMaxSizeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -344,7 +361,7 @@ func SyslogSetMaxSizeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	s, err := strconv.Atoi(size)
 	if err != nil {
 		q.Q(err)
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	QC.SyslogFileSize = uint(s)
@@ -352,6 +369,15 @@ func SyslogSetMaxSizeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
+// Whether to configure local syslog files to be compressed
+//
+// Usage : config local syslog compress [compress]
+//
+//	[compress]     : would be compressed
+//
+// Example :
+//
+//	config local syslog compress true
 func SyslogSetCompressCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -365,7 +391,7 @@ func SyslogSetCompressCmd(cmdinfo *CmdInfo) *CmdInfo {
 	boolValue, err := strconv.ParseBool(enable)
 	if err != nil {
 		q.Q(err)
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	QC.SyslogCompress = boolValue
@@ -375,6 +401,21 @@ func SyslogSetCompressCmd(cmdinfo *CmdInfo) *CmdInfo {
 
 const foramt = "2006/01/02 15:04:05"
 
+// Read local syslog.
+//
+// Usage : config local syslog read [start date] [start time] [end date] [end time] [max line]
+//
+//	[start date]   : search syslog start date
+//	[start time]   : search syslog start time
+//	[end date]     : search syslog end date
+//	[end time]     : search syslog end time
+//	[max line]     : max lines, if without max line, that mean read all of lines
+//
+// Example :
+//
+//	config local syslog read 2023/02/21 22:06:00 2023/02/22 22:08:00
+//	config local syslog read 5
+//	config local syslog read 2023/02/21 22:06:00 2023/02/22 22:08:00 5
 func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	maxline := 0
@@ -390,12 +431,12 @@ func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 		filtertime = true
 		start = strings.Join(ws[4:6], " ")
 		end = strings.Join(ws[6:8], " ")
-		//if inlcude max line paramters
+		// if inlcude max line paramters
 		if len(ws) == 9 {
 			v, err := strconv.Atoi(ws[8])
 			if err != nil {
 				q.Q(err)
-				cmdinfo.Status = err.Error()
+				cmdinfo.Status = "error: " + err.Error()
 				return cmdinfo
 			} else {
 				maxline = v
@@ -403,12 +444,12 @@ func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 			}
 		}
 	}
-	//if inlcude max line paramters
+	// if inlcude max line paramters
 	if len(ws) == 5 {
 		v, err := strconv.Atoi(ws[4])
 		if err != nil {
 			q.Q(err)
-			cmdinfo.Status = err.Error()
+			cmdinfo.Status = "error: " + err.Error()
 			return cmdinfo
 		} else {
 			maxline = v
@@ -416,9 +457,9 @@ func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 		}
 	}
 
-	readFile, err := os.Open(path.Join(QC.SyslogLocalPath, file))
+	readFile, err := os.Open(QC.SyslogLocalPath)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	fileScanner := bufio.NewScanner(readFile)
@@ -434,13 +475,11 @@ func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 			r, _ := compareTime(start, end, t.Format(foramt))
 			if r {
 				logs = append(logs, b)
-
 			}
 		} else {
 			logs = append(logs, b)
 		}
 		if maxline != 0 {
-
 			if len(logs) >= maxline {
 				break
 			}
@@ -449,11 +488,11 @@ func ReadSyslogCmd(cmdinfo *CmdInfo) *CmdInfo {
 	_ = readFile.Close()
 	b, err := json.Marshal(&logs)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Result = string(b)
-	log.Print(cmdinfo.Result)
+	q.Q(cmdinfo.Result)
 	cmdinfo.Status = "ok"
 	return cmdinfo
 }
@@ -479,12 +518,10 @@ func parsingDataofSyslog(message string) (syslog.Base, time.Time, error) {
 	}
 
 	return syslog.Base{}, time.Time{}, errors.New("not support type yet")
-
 }
 
-//compareTime compare time size with start time and end time
+// compareTime compare time size with start time and end time
 func compareTime(start, end, target string) (bool, error) {
-
 	s, err := time.Parse(foramt, start)
 	if err != nil {
 		return false, err
@@ -506,4 +543,17 @@ func compareTime(start, end, target string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+func SendSocketMessage(severity int, bufStr string) {
+	if severity < 6 {
+		ix := strings.Index(bufStr, ">")
+		wsMessage := WebSocketMessage{
+			Kind:    "mnms_syslog",
+			Level:   severity,
+			Message: strings.TrimSpace(bufStr[ix+1:]),
+		}
+		QC.WebSocketMessageBroadcast <- wsMessage
+		q.Q("forward to ws", wsMessage)
+	}
 }

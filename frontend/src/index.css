@@ -24,3 +24,14 @@
   vertical-align: middle;
   border-radius: 50%;
 }
+
+.custom-ant-pro-global-header {
+  position: relative;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  margin-block: 0;
+  margin-inline: 16px;
+  height: 56px;
+  box-sizing: border-box;
+}

@@ -8,18 +8,17 @@ import {
   Col,
   Space,
   InputNumber,
-  Tree,
   App,
   Card,
-  theme as antdTheme,
+  List,
+  Tag,
 } from "antd";
-import mibFileData from "../../utils/data/mibData.json";
-import { CaretDownOutlined } from "@ant-design/icons";
 import { useDispatch, useSelector } from "react-redux";
 import {
   clearErrMibMsg,
   clearValueAndType,
   GetMibBrowserData,
+  GetMibCommandResult,
   mibmgmtSelector,
   setMibIp,
   setMibMaxRepeators,
@@ -28,31 +27,18 @@ import {
 } from "../../features/mibbrowser/MibBrowserSlice";
 import AdvancedSetting from "../../components/mibbrowser/AdvancedSetting";
 import SetOptionPoup from "../../components/mibbrowser/SetOptionPoup";
-import { ProTable } from "@ant-design/pro-components";
+import ModalResult from "../../components/debug/ModalResult";
+import {
+  CheckCircleOutlined,
+  CloseCircleOutlined,
+  SyncOutlined,
+} from "@ant-design/icons";
 
 const operations = [
-  { value: "get_next", label: "Get Next" },
   { value: "get", label: "Get" },
-  { value: "get_bulk", label: "Get Bulk" },
-  { value: "get_subtree", label: "Get Subtree" },
-  { value: "get_walk", label: "Walk" },
+  { value: "walk", label: "Walk" },
+  { value: "bulk", label: "Bulk" },
   { value: "set", label: "Set" },
-];
-
-const column = [
-  {
-    key: "name",
-    dataIndex: "name",
-    width: 200,
-    title: "Name/OID",
-  },
-  {
-    key: "value",
-    dataIndex: "value",
-    width: 100,
-    title: "Value",
-  },
-  { key: "type", title: "Type", dataIndex: "type", width: 100 },
 ];
 
 const Mibbrowser = () => {
@@ -61,25 +47,48 @@ const Mibbrowser = () => {
     oid,
     operation,
     maxRepetors,
-    mibData,
     mibBrowserStatus,
     message,
+    value,
+    valueType,
+    cmdResponse,
   } = useSelector(mibmgmtSelector);
   const dispatch = useDispatch();
-  const [inputSearch, setInputSearch] = useState("");
-  const { notification } = App.useApp();
+  const { notification, modal } = App.useApp();
   const [openPopupSettings, setOpenPopupSettings] = useState(false);
   const [openPopupSetOpt, setOpenPopupSetOpt] = useState(false);
-
-  const { token } = antdTheme.useToken();
+  const [cmdResult, setCmdResult] = useState(null);
 
   const handleGoClick = () => {
     if (operation === "set") {
       setOpenPopupSetOpt(true);
     } else {
-      console.log(operation);
-      dispatch(GetMibBrowserData());
+      dispatch(
+        GetMibBrowserData({
+          [`snmp ${operation} ${ip_address} ${oid}`]: {},
+        })
+      );
     }
+  };
+
+  const handleViewResult = (cValue) => {
+    dispatch(GetMibCommandResult(cValue))
+      .unwrap()
+      .then((result) => {
+        const cResult = Object.values(result);
+        if (cResult[0].status === "") {
+          setTimeout(() => {
+            handleViewResult(cValue);
+          }, 5000);
+        }
+        setCmdResult(cResult);
+      })
+      .catch((error) => {
+        modal.error({
+          title: "Mib command Result",
+          content: error,
+        });
+      });
   };
 
   const handleSnmpSetCancelClick = () => {
@@ -87,35 +96,12 @@ const Mibbrowser = () => {
     setOpenPopupSetOpt(false);
   };
   const handleSnmpSetOkClick = () => {
-    dispatch(GetMibBrowserData());
+    dispatch(
+      GetMibBrowserData({
+        [`snmp set ${ip_address} ${oid} ${value} ${valueType}`]: {},
+      })
+    );
     setOpenPopupSetOpt(false);
-  };
-
-  const loopData = (data) => {
-    return data?.map((item) => {
-      if (item.children) {
-        return {
-          title: item.name,
-          key: item.oid,
-          children: loopData(item.children),
-        };
-      } else {
-        return {
-          title: item.name,
-          key: item.oid,
-        };
-      }
-    });
-  };
-
-  const recordAfterfiltering = (dataSource) => {
-    return dataSource.filter((row) => {
-      let rec = column.map((element) => {
-        //console.log(row[element.dataIndex].toString().includes(inputSearch));
-        return row[element.dataIndex].toString().includes(inputSearch);
-      });
-      return rec.includes(true);
-    });
   };
 
   useEffect(() => {
@@ -128,36 +114,22 @@ const Mibbrowser = () => {
   return (
     <Row gutter={[16, 16]}>
       <Col span={24}>
-        <Card
-          bordered={false}
-          title="Mib Browser"
-          extra={
-            <Button type="primary" onClick={() => setOpenPopupSettings(true)}>
-              Advanced Settings
-            </Button>
-          }
-          //bodyStyle={{ paddingTop: 5, paddingBottom: 5 }}
-        >
-          <Form layout="vertical">
-            <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 32 }} align="middle">
-              <Col xs={24} sm={12} lg={6}>
+        <Row gutter={[16, 16]}>
+          <Col xs={24} md={12} lg={12}>
+            <Card bordered={false} title="Mib Browser">
+              <Form layout="vertical">
                 <Form.Item label="IP Address">
                   <Input
                     value={ip_address}
                     onChange={(e) => dispatch(setMibIp(e.target.value))}
                   />
                 </Form.Item>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
                 <Form.Item label="OID">
                   <Input
                     value={oid}
                     onChange={(e) => dispatch(setMibOID(e.target.value))}
                   />
                 </Form.Item>
-              </Col>
-
-              <Col xs={24} sm={12} lg={6}>
                 <Form.Item label="Operations">
                   <Select
                     style={{ display: "block" }}
@@ -166,8 +138,6 @@ const Mibbrowser = () => {
                     options={operations}
                   />
                 </Form.Item>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
                 <Space>
                   {operation === "get_bulk" ? (
                     <Form.Item label="Max Repeators">
@@ -183,67 +153,106 @@ const Mibbrowser = () => {
                     go
                   </Button>
                 </Space>
-              </Col>
-            </Row>
-          </Form>
-        </Card>
+              </Form>
+            </Card>
+          </Col>
+          <Col xs={24} md={12} lg={12}>
+            <Card bordered={false} title="Mib Browser result">
+              <List
+                itemLayout="horizontal"
+                dataSource={cmdResponse}
+                renderItem={(item) => (
+                  <List.Item
+                    extra={
+                      <Button
+                        type="primary"
+                        size="small"
+                        onClick={() => handleViewResult(item)}
+                      >
+                        View Result
+                      </Button>
+                    }
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      wordWrap: "break-word",
+                    }}
+                  >
+                    <List.Item.Meta
+                      title={item}
+                      description={
+                        Array.isArray(cmdResult) &&
+                        cmdResult.length !== 0 &&
+                        cmdResult &&
+                        cmdResult[0].command === item ? (
+                          <Space direction="vertical" style={{ width: "100%" }}>
+                            <ModalResult
+                              title="Command:"
+                              value={cmdResult[0].command}
+                            />
+                            <ModalResult
+                              title="Name:"
+                              value={
+                                cmdResult[0].name !== ""
+                                  ? cmdResult[0].name
+                                  : "NO name assigned"
+                              }
+                            />
+                            <ModalResult
+                              title="Result:"
+                              value={
+                                cmdResult[0].name !== ""
+                                  ? cmdResult[0].result
+                                  : "NO result assigned"
+                              }
+                            />
+                            <ModalResult
+                              title="Status:"
+                              value={
+                                cmdResult[0].status === "" ||
+                                cmdResult[0].status === "running" ? (
+                                  <Tag
+                                    icon={<SyncOutlined spin />}
+                                    color="processing"
+                                  >
+                                    processing
+                                  </Tag>
+                                ) : cmdResult[0].status === "ok" ? (
+                                  <Tag
+                                    icon={<CheckCircleOutlined />}
+                                    color="success"
+                                  >
+                                    ok
+                                  </Tag>
+                                ) : (
+                                  <Tag
+                                    icon={<CloseCircleOutlined />}
+                                    color="error"
+                                  >
+                                    {cmdResult[0].status}
+                                  </Tag>
+                                )
+                              }
+                            />
+                          </Space>
+                        ) : (
+                          <Space direction="vertical" style={{ width: "100%" }}>
+                            <ModalResult
+                              title="Result:"
+                              value="NO result assigned"
+                            />
+                          </Space>
+                        )
+                      }
+                    />
+                  </List.Item>
+                )}
+              />
+            </Card>
+          </Col>
+        </Row>
       </Col>
-      {/* <Col xs={24} md={8}>
-        <Card bordered={false} title="SNMP Mibs">
-          <Tree
-            treeData={loopData([mibFileData])}
-            height={530}
-            defaultExpandAll
-            showLine={{ showLeafIcon: false }}
-            switcherIcon={<CaretDownOutlined />}
-            onSelect={(selectedKey) => {
-              console.log(selectedKey);
-              dispatch(setMibOID("." + selectedKey[0].toString() + ".0"));
-            }}
-          />
-        </Card>
-      </Col> */}
-      <Col xs={24} md={24}>
-        <ProTable
-          cardProps={{
-            style: { boxShadow: token?.Card?.boxShadow },
-          }}
-          headerTitle="Result Table"
-          columns={column}
-          dataSource={recordAfterfiltering(mibData)}
-          rowKey="name"
-          loading={mibBrowserStatus === "loading"}
-          pagination={{
-            position: ["bottomCenter"],
-            size: "default",
-            total: mibData.length,
-            defaultPageSize: 10,
-            pageSizeOptions: [10, 15, 20, 25],
-            showTotal: (total, range) =>
-              `${range[0]}-${range[1]} of ${total} items`,
-          }}
-          scroll={{
-            x: 900,
-            y: 400,
-          }}
-          search={false}
-          columnsState={{
-            persistenceKey: "nms-mib-table",
-            persistenceType: "localStorage",
-          }}
-          options={{
-            reload: false,
-          }}
-          defaultSize="small"
-          toolbar={{
-            search: {
-              onSearch: (value) => {
-                setInputSearch(value);
-              },
-            },
-          }}
-        />
-      </Col>
+
       <AdvancedSetting
         isAdcancedSettingOpen={openPopupSettings}
         handleCloseAdvancedSetting={() => setOpenPopupSettings(false)}

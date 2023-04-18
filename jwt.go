@@ -10,7 +10,6 @@ import (
 	"net/smtp"
 	"time"
 
-	"github.com/cloudflare/gokey"
 	"github.com/go-chi/jwtauth/v5"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/qeof/q"
@@ -44,28 +43,6 @@ func GenerateEncryptedKeySeed(pass string) ([]byte, error) {
 	return seed, nil
 }
 
-// GenPassword generates password for user
-func GenPassword(hostname, account string) (string, error) {
-
-	seedBytes, err := GenerateEncryptedKeySeed(hostname)
-	if err != nil {
-		return "", err
-	}
-
-	password, err := gokey.GetPass(hostname, account, seedBytes,
-		&gokey.PasswordSpec{
-			Length:         16,
-			Upper:          3,
-			Lower:          3,
-			Digits:         2,
-			Special:        0,
-			AllowedSpecial: ""})
-	if err != nil {
-		return "", err
-	}
-	return password, nil
-}
-
 // GetToken get a internal token that can be used by CLI and node
 func GetToken(name string) (string, error) {
 	var token string
@@ -95,8 +72,9 @@ var tempararyUrlToken = jwtauth.New("HS256", []byte("mnmstemparayurl"), nil)
 func generateJWT(user, password string) (string, error) {
 
 	// Validate password
-	if !validUserPassword(user, password) {
-		return "", fmt.Errorf("wrong password or user not existed")
+	err := validUserPassword(user, password)
+	if err != nil {
+		return "", err
 	}
 
 	// token will expire in 30 days

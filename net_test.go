@@ -11,11 +11,6 @@ import (
 	"github.com/qeof/q"
 )
 
-func init() {
-	q.O = "stderr"
-	q.P = ".*"
-}
-
 func TestLocalAddresses(t *testing.T) {
 	addrs, err := IfnetAddresses()
 	if err != nil {
@@ -32,6 +27,8 @@ func TestGetIfnetAddresses(t *testing.T) {
 	q.Q(ifnetAddrs)
 }
 
+//disable beacuse test environment couldn't have test ip
+/*
 func TestGetInterfaceByIP(t *testing.T) {
 	iface, err := GetInterfaceByIP("192.168.100.123")
 	if err != nil {
@@ -47,7 +44,7 @@ func TestGetInterfaceByIP(t *testing.T) {
 		t.Fatalf("GetInterfaceByIP expected nil iface")
 	}
 	q.Q(iface)
-}
+}*/
 
 func TestIfnetMulti(t *testing.T) {
 	ifaces, err := net.Interfaces()

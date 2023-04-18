@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/qeof/q"
-	"github.com/sirupsen/logrus"
 	// "time"
 )
 
@@ -32,7 +31,6 @@ func writeFile(content []byte) {
 		if err != nil {
 			q.Q("append content to file faild: ", err)
 		}
-		//log.Printf("append content: %s success\n", string(content))
 	}
 }
 
@@ -76,7 +74,6 @@ func uploadfile(con net.Conn, file_size *int64) error {
 		if n > 0 {
 			//writeFile(buf[:])
 			*file_size = *file_size - (int64)(len(buf))
-			//logrus.Printf("file size %d %d", file_sizes, (int64)(len(buf)))
 			return nil
 		}
 	}
@@ -93,10 +90,9 @@ func serverConn(conn net.Conn) {
 		return
 	}
 	//tmp := file_sizes
-	logrus.Printf("file size %d", file_sizes)
+	q.Q("file size:", file_sizes)
 	for {
 		if file_sizes <= 0 {
-			//logrus.Printf("file size %d\n", file_sizes)
 			time.Sleep(time.Millisecond * 100)
 			//going
 			_, err = conn.Write([]byte("a"))

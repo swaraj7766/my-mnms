@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,77 @@ import (
 	"github.com/gosnmp/gosnmp"
 	"github.com/qeof/q"
 )
+
+type SnmpOptions struct {
+	Port      uint16
+	Community string
+	Version   gosnmp.SnmpVersion
+	Timeout   time.Duration
+}
+
+// return read-all-only community and read-write-all community
+func extractCommunityNames(output string) (string, string, error) {
+	lines := strings.Split(output, "\n")
+	communityNamePattern := `(\w+)\s+(read-all-only|read-write-all)`
+	regex, err := regexp.Compile(communityNamePattern)
+	if err != nil {
+		return "", "", err
+	}
+	var readOnly string
+	var readWrite string
+	for _, line := range lines {
+		match := regex.FindStringSubmatch(line)
+		if len(match) == 3 {
+			communityName := match[1]
+			accessRight := match[2]
+
+			if accessRight == "read-all-only" {
+				readOnly = communityName
+			}
+			if accessRight == "read-write-all" {
+				readWrite = communityName
+			}
+		}
+	}
+	return readOnly, readWrite, nil
+
+}
+
+// GetSNMPCommunity return read-only community and read-write community
+func GetSNMPCommunity(user, pass, devIP string) (string, string, error) {
+	dev, err := FindDevWithIP(devIP)
+	if err != nil {
+		return "", "", err
+	}
+	if dev.ModelName == "" {
+		err := fmt.Errorf("error: invalid device model")
+		return "", "", err
+	}
+	if !CheckSwitchCliModel(dev.ModelName) {
+		err := fmt.Errorf("error: switch cli not available")
+		return "", "", err
+	}
+
+	var cmdinfo CmdInfo
+	err = SendSwitch(&cmdinfo, dev, user, pass, "show snmp community")
+	if err != nil {
+		q.Q(err)
+		return "", "", err
+	}
+
+	return extractCommunityNames(cmdinfo.Result)
+}
+
+/*
+var trapTypeMessage = []string{
+	"cold start",
+	"warm start",
+	"link down",
+	"link up",
+	"authentication failure",
+	"egp neighbor loss",
+	"enterprise specific",
+}*/
 
 // snmp scan, get, set
 
@@ -79,12 +151,21 @@ loop:
 
 func probeSnmp(ipaddr string) error {
 	var err error
+	var community string
+	devInfo, err := FindDevWithIP(ipaddr)
+	community = QC.SnmpOptions.Community
+	if err == nil {
+
+		if len(devInfo.ReadCommunity) > 0 {
+			community = devInfo.ReadCommunity
+		}
+	}
 	params := &gosnmp.GoSNMP{
 		Target:                  ipaddr,
-		Port:                    161,
-		Community:               "public",
-		Version:                 gosnmp.Version2c,
-		Timeout:                 time.Duration(2) * time.Second,
+		Port:                    QC.SnmpOptions.Port,
+		Community:               community,
+		Version:                 QC.SnmpOptions.Version,
+		Timeout:                 QC.SnmpOptions.Timeout,
 		UseUnconnectedUDPSocket: true,
 	}
 
@@ -237,15 +318,25 @@ func SnmpGetObjectID(path string) (string, error) {
 
 // SnmpGet - get snmp data
 func SnmpGet(address string, oids []string) (result *gosnmp.SnmpPacket, err error) {
+	var community string
+	devInfo, err := FindDevWithIP(address)
+	community = QC.SnmpOptions.Community
+	if err == nil {
+
+		if len(devInfo.ReadCommunity) > 0 {
+			community = devInfo.ReadCommunity
+		}
+	}
 	params := &gosnmp.GoSNMP{
 		Target:                  address,
-		Port:                    161,
-		Community:               "private",
-		Version:                 gosnmp.Version2c,
-		Timeout:                 time.Duration(2) * time.Second,
+		Port:                    QC.SnmpOptions.Port,
+		Community:               community,
+		Version:                 QC.SnmpOptions.Version,
+		Timeout:                 QC.SnmpOptions.Timeout,
 		UseUnconnectedUDPSocket: true,
 	}
 
+	q.Q("snmp get", params)
 	err = params.Connect()
 
 	if err != nil {
@@ -262,16 +353,98 @@ func SnmpGet(address string, oids []string) (result *gosnmp.SnmpPacket, err erro
 	return result, nil
 }
 
-// SnmpSet - set snmp data
-func SnmpSet(address, oid string, value string, valuetype string) (result *gosnmp.SnmpPacket, err error) {
+// SnmpWalk - walk snmp data
+func SnmpWalk(address string, oid string) (result []gosnmp.SnmpPDU, err error) {
+	var community string
+	devInfo, err := FindDevWithIP(address)
+	community = QC.SnmpOptions.Community
+	if err == nil {
+
+		if len(devInfo.ReadCommunity) > 0 {
+			community = devInfo.ReadCommunity
+		}
+	}
 	params := &gosnmp.GoSNMP{
 		Target:                  address,
-		Port:                    161,
-		Community:               "private",
-		Version:                 gosnmp.Version2c,
-		Timeout:                 time.Duration(2) * time.Second,
+		Port:                    QC.SnmpOptions.Port,
+		Community:               community,
+		Version:                 QC.SnmpOptions.Version,
+		Timeout:                 QC.SnmpOptions.Timeout,
 		UseUnconnectedUDPSocket: true,
 	}
+
+	err = params.Connect()
+
+	if err != nil {
+		q.Q("error: snmp connect", err)
+		// cmdinfo.Status = "error: cannot contact snmp target"
+		return nil, err
+	}
+	defer params.Conn.Close()
+	result, err = params.WalkAll(oid)
+	if err != nil && len(result) == 0 {
+		q.Q("error: snmp walk", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+// SnmpBulk - Bulk snmp data
+func SnmpBulk(address string, oid string) (result []gosnmp.SnmpPDU, err error) {
+	var community string
+	devInfo, err := FindDevWithIP(address)
+	community = QC.SnmpOptions.Community
+	if err == nil {
+
+		if len(devInfo.ReadCommunity) > 0 {
+			community = devInfo.ReadCommunity
+		}
+	}
+	params := &gosnmp.GoSNMP{
+		Target:                  address,
+		Port:                    QC.SnmpOptions.Port,
+		Community:               community,
+		Version:                 QC.SnmpOptions.Version,
+		Timeout:                 QC.SnmpOptions.Timeout,
+		UseUnconnectedUDPSocket: true,
+	}
+
+	err = params.Connect()
+
+	if err != nil {
+		q.Q("error: snmp connect", err)
+		// cmdinfo.Status = "error: cannot contact snmp target"
+		return nil, err
+	}
+	defer params.Conn.Close()
+	result, err = params.BulkWalkAll(oid)
+	if err != nil && len(result) == 0 {
+		q.Q("error: snmp bulk", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+// SnmpSet - set snmp data
+func SnmpSet(address, oid string, value string, valuetype string) (result *gosnmp.SnmpPacket, err error) {
+	var community string
+	devInfo, err := FindDevWithIP(address)
+	community = QC.SnmpOptions.Community
+	if err == nil {
+
+		if len(devInfo.WriteCommunity) > 0 {
+			community = devInfo.WriteCommunity
+		}
+	}
+	params := &gosnmp.GoSNMP{
+		Target:                  address,
+		Port:                    QC.SnmpOptions.Port,
+		Community:               community,
+		Version:                 QC.SnmpOptions.Version,
+		Timeout:                 QC.SnmpOptions.Timeout,
+		UseUnconnectedUDPSocket: true,
+	}
+
 	t := GetType(valuetype)
 	q.Q("snmp set type", t, valuetype)
 	anyVal := ConvertSetValue(value, valuetype)
@@ -296,7 +469,18 @@ func PDUToString(pdu gosnmp.SnmpPDU) string {
 	var resStr string
 	switch pdu.Type {
 	case gosnmp.OctetString:
-		resStr = string(pdu.Value.([]byte))
+		val, ok := pdu.Value.([]byte)
+		if ok {
+			addr := net.HardwareAddr(val[:])
+			r, err := net.ParseMAC(addr.String())
+			if err != nil {
+				resStr = string(getValidByte(pdu.Value.([]byte)))
+			} else {
+				resStr = strings.ToUpper(r.String())
+			}
+		} else {
+			resStr = string(pdu.Value.([]byte))
+		}
 	case gosnmp.ObjectIdentifier:
 		resStr = pdu.Value.(string)
 	case gosnmp.IPAddress:
@@ -309,6 +493,52 @@ func PDUToString(pdu gosnmp.SnmpPDU) string {
 	return resStr
 }
 
+// Use snmp get/set/communities/update.
+//
+// Usage : snmp get [ip address] [oid]
+//
+//	[ip address]  : target device ip address
+//	[oid]         : target oid
+//
+// Example : snmp get 10.0.50.1 1.3.6.1.2.1.1.1.0
+//
+// Usage : snmp set [ip address] [oid] [value] [value type]
+//
+//	[ip address]  : target device ip address
+//	[oid]         : target oid
+//	[value]       : would be set value
+//	[value type]  : would be set value type.(OctetString, BitString, SnmpNullVar, Counter,
+//	                Counter64, Gauge, Opaque, Integer, ObjectIdentifier, IpAddress, TimeTicks)
+//
+// Example : snmp set 10.0.50.1 1.3.6.1.2.1.1.4.0 www.atop.com.tw OctetString
+//
+// Usage: snmp communities [user] [password] [mac]
+// Read device's SNMP communities and update to system.
+//
+//	[user]     : Device telnt login user
+//	[password] : Device telnt login password
+//	[mac]      : Device mac address
+//
+// Example: snmp communities admin default 00-60-E9-27-E3-39
+//
+// Usage: snmp update community [mac] [read community] [write community]
+// Update device's SNMP communities manually.
+//
+//	[mac]            : Device mac address
+//	[read community] : Device snmp read community
+//	[write community]: Device snmp write community
+//
+// Example: snmp update community 00-60-E9-27-E3-39 public private
+//
+// Usage: snmp options [port] [community] [version] [timeout]
+// Update global snmp options.
+//
+//	[port]     : snmp listen port
+//	[community]: snmp community
+//	[version]  : snmp version
+//	[timeout]  : snmp timeout
+//
+// Example: snmp options 161 public 2c 2
 func SnmpCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -317,9 +547,117 @@ func SnmpCmd(cmdinfo *CmdInfo) *CmdInfo {
 		cmdinfo.Status = "error: invalid command"
 		return cmdinfo
 	}
+	// snmp options {port} {community} {version} {timeout}
+	// snmp options 161 private 2c 2
+	if ws[1] == "options" {
+		q.Q(ws)
+		if len(ws) < 6 {
+			cmdinfo.Status = "error: invalid snmp options command"
+			return cmdinfo
+		}
+		port, err := strconv.Atoi(ws[2])
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: port %v", err)
+			return cmdinfo
+		}
+		timeout, err := strconv.Atoi(ws[5])
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: timeout %v", err)
+			return cmdinfo
+		}
+		var version gosnmp.SnmpVersion
+		switch ws[4] {
+		case "1":
+			version = gosnmp.Version1
+		case "2c":
+			version = gosnmp.Version2c
+		case "3":
+			version = gosnmp.Version3
+		default:
+			cmdinfo.Status = fmt.Sprintf("error: version %v, accept 1|2c|3", err)
+			return cmdinfo
+		}
+		q.Q(port, ws[3], version, timeout)
+
+		QC.SnmpOptions = SnmpOptions{
+			Port:      uint16(port),
+			Community: ws[3],
+			Version:   version,
+			Timeout:   time.Duration(timeout) * time.Second,
+		}
+
+		cmdinfo.Status = "ok"
+		q.Q(QC.SnmpOptions)
+		return cmdinfo
+	}
+
+	if ws[1] == "communities" {
+		// read communities and write to DevInfo
+		// snmp communities {user} {password} {mac}
+
+		if len(ws) < 5 {
+			cmdinfo.Status = "error: invalid snmp communities command"
+			return cmdinfo
+		}
+		// find device
+		devID := ws[4]
+		user := ws[2]
+		password := ws[3]
+		q.Q(devID, user, password)
+		dev, err := FindDev(devID)
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: %v", err)
+			return cmdinfo
+		}
+		// get communities
+		r, rw, err := GetSNMPCommunity(user, password, dev.IPAddress)
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: %v", err)
+			return cmdinfo
+		}
+		err = InsertCommunities(dev.Mac, r, rw)
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: %v", err)
+			return cmdinfo
+		}
+		cmdinfo.Status = "ok"
+
+		return cmdinfo
+	}
+	// snmp update community {mac} {read community} {write community}
+
+	if ws[1] == "update" && ws[2] == "community" {
+		if len(ws) < 6 {
+			cmdinfo.Status = "error: invalid snmp update community command"
+			return cmdinfo
+		}
+		mac := ws[3]
+		r := ws[4]
+		w := ws[5]
+		dev, err := FindDev(mac)
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: %v", err)
+			return cmdinfo
+		}
+		err = InsertCommunities(dev.Mac, r, w)
+		if err != nil {
+			cmdinfo.Status = fmt.Sprintf("error: %v", err)
+			return cmdinfo
+		}
+		cmdinfo.Status = "ok"
+		return cmdinfo
+	}
+
 	address := ws[2]
 	oid := ws[3]
 	oids := []string{oid}
+	// validate address
+	err := CheckIPAddress(address)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+
 	if ws[1] == "get" {
 		// snmp get {ip_adddress} {oid}
 		res, err := SnmpGet(address, oids)
@@ -331,6 +669,7 @@ func SnmpCmd(cmdinfo *CmdInfo) *CmdInfo {
 		}
 		var resStr string
 		q.Q("snmp get ", res.Variables)
+
 		for _, variable := range res.Variables {
 			oid := variable.Name[1:]
 			resStr = PDUToString(variable)
@@ -340,6 +679,82 @@ func SnmpCmd(cmdinfo *CmdInfo) *CmdInfo {
 		cmdinfo.Result = resStr
 		return cmdinfo
 	}
+
+	if ws[1] == "walk" {
+		cmdinfo.Status = running.String()
+		go func(cmdinfo CmdInfo) {
+			defer func() {
+				QC.CmdMutex.Lock()
+				QC.CmdData[cmdinfo.Command] = cmdinfo
+				QC.CmdMutex.Unlock()
+			}()
+			type walkResult struct {
+				Oid   string
+				Value string
+			}
+			res, err := SnmpWalk(address, oid)
+			if err != nil {
+				q.Q(err)
+				cmdinfo.Status = fmt.Sprintf("error: %v", err)
+				return
+			}
+			q.Q("snmp walk ", res)
+			walks := []walkResult{}
+			for _, variable := range res {
+				oid := variable.Name[1:]
+				resStr := PDUToString(variable)
+				walks = append(walks, walkResult{Oid: oid, Value: resStr})
+			}
+			b, err := json.Marshal(&walks)
+			if err != nil {
+				q.Q(err)
+				cmdinfo.Status = fmt.Sprintf("error: %v", err)
+				return
+			}
+			cmdinfo.Status = "ok"
+			cmdinfo.Result = string(b)
+			// return cmdinfo
+		}(*cmdinfo)
+		return cmdinfo
+	}
+	if ws[1] == "bulk" {
+		cmdinfo.Status = running.String()
+		go func(cmdinfo CmdInfo) {
+			defer func() {
+				QC.CmdMutex.Lock()
+				QC.CmdData[cmdinfo.Command] = cmdinfo
+				QC.CmdMutex.Unlock()
+			}()
+
+			type walkResult struct {
+				Oid   string
+				Value string
+			}
+			res, err := SnmpBulk(address, oid)
+			if err != nil {
+				q.Q(err)
+				cmdinfo.Status = fmt.Sprintf("error: %v", err)
+				return
+			}
+			q.Q("snmp bulk ", res)
+			walks := []walkResult{}
+			for _, variable := range res {
+				oid := variable.Name[1:]
+				resStr := PDUToString(variable)
+				walks = append(walks, walkResult{Oid: oid, Value: resStr})
+			}
+			b, err := json.Marshal(&walks)
+			if err != nil {
+				q.Q(err)
+				cmdinfo.Status = fmt.Sprintf("error: %v", err)
+				return
+			}
+			cmdinfo.Status = "ok"
+			cmdinfo.Result = string(b)
+		}(*cmdinfo)
+		return cmdinfo
+	}
+
 	// snmp set {ip_adddress} {oid} {value} {type}
 	if ws[1] != "set" {
 		cmdinfo.Status = "error: invalid command"
@@ -362,6 +777,8 @@ func SnmpCmd(cmdinfo *CmdInfo) *CmdInfo {
 
 	if uint8(pkt.Error) > 0 {
 		q.Q(pkt.Error)
+		cmdinfo.Status = fmt.Sprintf("error: %v", pkt.Error.String())
+		return cmdinfo
 	}
 	q.Q(pkt.Variables)
 	cmdinfo.Status = "ok"
@@ -423,12 +840,15 @@ func (h snmpHandler) OnError(addr net.Addr, err error) {
 }
 
 func (h snmpHandler) OnTrap(addr net.Addr, trap snmplib.Trap) {
-	prettyPrint, _ := json.MarshalIndent(trap, "", "\t")
+	prettyPrint, _ := json.Marshal(trap)
 	if QC.IsRoot {
 		// TODO save data to to q
 		q.Q("trapserver :", string(prettyPrint))
 	} else {
-		// SendSyslogMessage("trap: here trap content will go")
+		err := SendSyslog(LOG_ALERT, "trapserver", string(prettyPrint))
+		if err != nil {
+			q.Q("error: sending trap syslog", err)
+		}
 	}
 }
 

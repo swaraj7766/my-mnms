@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -35,7 +36,7 @@ type GwdModelInfo struct {
 	Kernel     string `json:"kernel"`
 	Ap         string `json:"ap"`
 	ScannedBy  string `json:"scannedBy"`
-	// IsDHCP     bool   `json:"isDHCP"`
+	IsDHCP     bool   `json:"isDHCP"`
 }
 
 type GwdNetworkConfig struct {
@@ -51,30 +52,23 @@ type GwdNetworkConfig struct {
 
 var gwdTotalReceived int
 
-func GwdMain() {
-	err := GwdProcess()
-	if err != nil {
-		q.Q(err)
-	}
-}
-
 var gIfaces []net.Interface
 
-func GwdProcess() error {
+func GwdMain() {
 	var err error
 	gIfaces, err = GetAllInterfaces()
 	if err != nil {
-		q.Q(err)
-		return err
+		q.Q("error: exiting gwd main", err)
+		return
 	}
-
 	gwdTotalReceived = 0
 
 	var wg sync.WaitGroup
 
 	allDevs, err := pcap.FindAllDevs()
 	if err != nil {
-		q.Q(err)
+		q.Q("error: exiting gwd main", err)
+		return
 	}
 
 	var ifaceNames []string
@@ -87,23 +81,21 @@ func GwdProcess() error {
 	}
 
 	q.Q(ifaceNames)
-
 	for _, ifaceName := range ifaceNames {
 		wg.Add(1)
 		go func(ifaceName string) {
 			defer wg.Done()
-			// pcap input filtering
-
 			err := interfaceInput(ifaceName)
 			if err != nil {
 				q.Q(err)
 			}
 		}(ifaceName)
 	}
-
-	wg.Wait()
-
-	return nil
+	for {
+		time.Sleep(time.Duration(QC.GwdInterval) * time.Second)
+		_ = GwdInvite()
+	}
+	//wg.Wait()
 }
 
 func interfaceInput(ifaceName string) error {
@@ -168,20 +160,24 @@ func processPacket(packet gopacket.Packet) {
 
 	udpLayer := packet.Layer(layers.LayerTypeUDP)
 	if udpLayer != nil {
-		udp, _ := udpLayer.(*layers.UDP)
-		if udp.DstPort != GwdUDPPort {
-			return
-		}
-		q.Q(udp.SrcPort, udp.DstPort, udp.Length)
-		_, err := gwdParse(udp.Payload)
-		if err != nil {
-			q.Q(err)
+		udp, ok := udpLayer.(*layers.UDP)
+		if ok {
+			if udp.DstPort != GwdUDPPort {
+				return
+			}
+			q.Q(udp.SrcPort, udp.DstPort, udp.Length)
+			_, err := gwdParse(udp.Payload)
+			if err != nil {
+				q.Q(err)
+			}
 		}
 	}
 
-	if err := packet.ErrorLayer(); err != nil {
-		q.Q("error: decoding some part of the packet:", err)
-	}
+	/*
+		if err := packet.ErrorLayer(); err != nil {
+			q.Q("error: decoding some part of the packet:", err)
+		}
+	*/
 }
 
 func GwdInvite() error {
@@ -195,7 +191,10 @@ func GwdInvite() error {
 }
 
 func GwdBroadcast(msg []byte) error {
-	ips, _ := GetLocalIP()
+	ips, err := GetLocalIP()
+	if err != nil {
+		return err
+	}
 	for _, ip := range ips {
 		/*bcastAddr, err := GetIfaceBroadcast(iface)
 		if err != nil {
@@ -211,12 +210,12 @@ func GwdBroadcast(msg []byte) error {
 	return nil
 }
 
-func GwdReset(ipaddr string, macaddr string, username string, password string) error {
+func GwdMtdErase(ipaddr string, macaddr string, username string, password string) error {
 	n := GwdNetworkConfig{
 		IPAddress: ipaddr, MACAddress: macaddr,
 		Username: username, Password: password,
 	}
-	b, err := gwdSetResetDefault(n)
+	b, err := gwdSetMtdErase(n)
 	if err != nil {
 		q.Q(err)
 		return err
@@ -224,12 +223,12 @@ func GwdReset(ipaddr string, macaddr string, username string, password string) e
 	return GwdBroadcast(b)
 }
 
-func GwdReboot(ipaddr string, macaddr string, username string, password string) error {
+func GwdReset(ipaddr string, macaddr string, username string, password string) error {
 	n := GwdNetworkConfig{
 		IPAddress: ipaddr, MACAddress: macaddr,
 		Username: username, Password: password,
 	}
-	b, err := gwdSetRebootPacket(n)
+	b, err := gwdSetResetPacket(n)
 	if err != nil {
 		q.Q(err)
 		return err
@@ -280,6 +279,7 @@ func gwdParse(msg []byte) (GwdModelInfo, error) {
 		model.Netmask = byteToString(msg[236:240], ".")
 		model.Gateway = byteToString(msg[24:28], ".")
 		model.Hostname = CleanStr(toUtf8(msg[90:106]))
+		model.IsDHCP = msg[106] == 1
 		model.Kernel = CleanStr(fmt.Sprintf("%d.%d", msg[109], msg[108]))
 		model.Ap = CleanStr(toUtf8(msg[110:235]))
 		model.ScannedBy = QC.Name
@@ -319,7 +319,7 @@ func gwdConfigPacket() []byte {
 	return packet
 }
 
-func gwdRebootPacket() []byte {
+func gwdResetPacket() []byte {
 	packet := make([]byte, 300)
 	packet[0] = 5
 	packet[1] = 1
@@ -339,9 +339,9 @@ func gwdBeepPacket() []byte {
 	return packet
 }
 
-func gwdReSetDefaultPacket() []byte {
+func gwdMtdErasePacket() []byte {
 	packet := make([]byte, 300)
-	packet[0] = 5
+	packet[0] = 8
 	packet[1] = 1
 	packet[2] = 6
 	packet[4] = 0x92
@@ -363,8 +363,8 @@ func gwdSetBeepPacket(config GwdNetworkConfig) ([]byte, error) {
 	return packet, nil
 }
 
-func gwdSetResetDefault(config GwdNetworkConfig) ([]byte, error) {
-	packet := gwdReSetDefaultPacket()
+func gwdSetMtdErase(config GwdNetworkConfig) ([]byte, error) {
+	packet := gwdMtdErasePacket()
 	packet, err := addIpToPackage(config, packet)
 	if err != nil {
 		return nil, err
@@ -585,8 +585,8 @@ func gwdSetConfigPacket(config GwdNetworkConfig) ([]byte, error) {
 	return packet, nil
 }
 
-func gwdSetRebootPacket(config GwdNetworkConfig) ([]byte, error) {
-	packet := gwdRebootPacket()
+func gwdSetResetPacket(config GwdNetworkConfig) ([]byte, error) {
+	packet := gwdResetPacket()
 	packet, err := addIpToPackage(config, packet)
 	if err != nil {
 		return nil, errors.New("IPAddress format error")

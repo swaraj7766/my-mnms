@@ -1,25 +1,19 @@
-import { FloatButton } from "antd";
+import { Switch } from "antd";
 import React from "react";
 import { useThemeContex } from "../../utils/context/CustomThemeContext";
-import { MoonIcon, SunIcon, ThemeIcon } from "./CustomsIcons";
+import { MoonIcon, SunIcon } from "./CustomsIcons";
 
 const ChangeThemeMode = () => {
-  const { changeThemeMode, mode } = useThemeContex();
+  const { toggleColorMode, mode } = useThemeContex();
   return (
-    <FloatButton.Group icon={<ThemeIcon />} trigger="click">
-      <FloatButton
-        icon={<SunIcon />}
-        tooltip={<div>Light</div>}
-        type={mode === "light" ? "primary" : "default"}
-        onClick={() => changeThemeMode("light")}
+    <>
+      <Switch
+        checkedChildren={<MoonIcon />}
+        unCheckedChildren={<SunIcon />}
+        checked={mode === "realDark"}
+        onChange={toggleColorMode}
       />
-      <FloatButton
-        icon={<MoonIcon />}
-        tooltip={<div>Dark</div>}
-        type={mode === "realDark" ? "primary" : "default"}
-        onClick={() => changeThemeMode("realDark")}
-      />
-    </FloatButton.Group>
+    </>
   );
 };
 

@@ -19,7 +19,7 @@ import (
 	atop "mnms/pkg/simulator/snmp"
 	snmpvalue "mnms/pkg/simulator/snmp/bindvalue"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qeof/q"
 )
 
 const account = "admin"
@@ -30,10 +30,6 @@ const packetlen = 300
 
 const port = "55954"
 const fiter = "udp and port 55954"
-
-func init() {
-	logrus.SetLevel(logrus.ErrorLevel)
-}
 
 // NewAtopSimulator create new atopdevice simulate withe random mac,random ip,random deviceType
 //
@@ -171,10 +167,14 @@ func createPcap(ethName string) (*pcap.InstancePcap, error) {
 }
 
 // send device info
-func (a *AtopGwdClient) sendDevice() {
+func (a *AtopGwdClient) sendDevice() error {
 
 	a.updateDeviceInfo() // for being synchronized with snmp simulation
-	a.broadcast(a.getInfoPacket())
+	err := a.broadcast(a.getInfoPacket())
+	if err != nil {
+		return err
+	}
+	return nil
 
 }
 
@@ -214,7 +214,7 @@ func (a *AtopGwdClient) settingDevice(msg []byte) {
 
 	a.DeleteIPaddress(a.ModelInfo.IPAddress, a.ModelInfo.Netmask)
 
-	logrus.Printf("SettingDevice ,device ip:%v....", a.ModelInfo.IPAddress)
+	q.Q("SettingDevice ,device ip:", a.ModelInfo.IPAddress)
 	a.ModelInfo.IPAddress = strings.Join(newip[:], ".")
 	a.ModelInfo.Netmask = strings.Join(newmask[:], ".")
 	a.ModelInfo.Gateway = strings.Join(gate[:], ".")
@@ -225,7 +225,7 @@ func (a *AtopGwdClient) settingDevice(msg []byte) {
 	if err == nil {
 		err := var_writeFile("sysName", a.ModelInfo.Hostname)
 		if err != nil {
-			logrus.Print(err)
+			q.Q(err)
 		}
 	}
 
@@ -247,7 +247,7 @@ func (a *AtopGwdClient) Shutdown() error {
 		a.TelnetServerShutdown()
 		a.FirmwareShutdown()
 		a.DeleteIPaddress(a.ModelInfo.IPAddress, a.ModelInfo.Netmask)
-		logrus.Printf("device:%v Shutdown", a.ModelInfo.IPAddress)
+		q.Q("device: Shutdown", a.ModelInfo.IPAddress)
 	}
 	return nil
 }
@@ -257,16 +257,20 @@ func (a *AtopGwdClient) StartUp() error {
 	if !a.getpowerflag() {
 		err := a.pcap.Run()
 		if err != nil {
-			logrus.Fatal(err)
+			return err
 		}
 		a.AddIPaddress(a.ModelInfo.IPAddress, a.ModelInfo.Netmask)
 		a.updateDeviceInfo() // for being synchronized with snmp simulation
-		a.SnmpRun(a.ModelInfo.IPAddress)
+		err = a.SnmpRun(a.ModelInfo.IPAddress)
+		if err != nil {
+			q.Q(err)
+		}
 		a.setpowerflag(true)
 		a.setDataflag(true)
 		a.TelnetServerRun()
 		a.FirmwareRun()
-		logrus.Printf("device:%v start up", a.ModelInfo.IPAddress)
+		time.Sleep(time.Millisecond * 300)
+		q.Q("device:", a.ModelInfo.IPAddress, " start up")
 	}
 	return nil
 }
@@ -275,8 +279,11 @@ func (a *AtopGwdClient) StartUp() error {
 func (a *AtopGwdClient) AddIPaddress(ip, mask string) {
 	m := atopnet.CovertMaskToLen(mask)
 	prfixip := ip + "/" + strconv.Itoa(m)
-	logrus.Debugf("ethName:%v add ip,%v", a.ethname, prfixip)
-	_ = atopnet.AddIPAddress(a.ethname, prfixip)
+	q.Q("ethName:", a.ethname, " add ip:", prfixip)
+	err := atopnet.AddIPAddress(a.ethname, prfixip)
+	if err != nil {
+		q.Q(err)
+	}
 
 }
 
@@ -284,7 +291,7 @@ func (a *AtopGwdClient) AddIPaddress(ip, mask string) {
 func (a *AtopGwdClient) DeleteIPaddress(ip, mask string) {
 	m := atopnet.CovertMaskToLen(mask)
 	prfixip := ip + "/" + strconv.Itoa(m)
-	logrus.Debugf("ethName:%v delete ip,%v", a.ethname, prfixip)
+	q.Q("ethName:", a.ethname, " delete ip:", prfixip)
 	_ = atopnet.DeleteIPAddress(a.ethname, prfixip)
 
 }
@@ -320,49 +327,53 @@ func (a *AtopGwdClient) Reboot() {
 
 // Beep make device beep
 func (a *AtopGwdClient) Beep() {
-	logrus.Printf("device:%v beep .....", a.ModelInfo.IPAddress)
-	logrus.Printf("device:%v beep .....", a.ModelInfo.IPAddress)
+	q.Q("device:", a.ModelInfo.IPAddress, " beep .....")
+	q.Q("device:", a.ModelInfo.IPAddress, " beep .....")
 }
 
 // broadcast broadcast
-func (a *AtopGwdClient) broadcast(msg []byte) {
+func (a *AtopGwdClient) broadcast(msg []byte) error {
 	addr := net.JoinHostPort("255.255.255.255", port)
 	broadcastAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		logrus.Print(err)
+		return err
 	}
 	//outip := a.outip
-	logrus.Printf("IP:%v", a.ModelInfo.IPAddress)
-	logrus.Printf("Mask:%v", a.ModelInfo.Netmask)
-	logrus.Printf("GateWay:%v", a.ModelInfo.Gateway)
-	logrus.Print("send info.....")
-	logrus.Debugf("device:%v boradcast to:%v", a.ModelInfo.IPAddress, addr)
+	q.Q("IP:", a.ModelInfo.IPAddress)
+	q.Q("Mask:", a.ModelInfo.Netmask)
+	q.Q("GateWay:", a.ModelInfo.Gateway)
+	q.Q("send info.....")
+	q.Q("device:", a.ModelInfo.IPAddress, " boradcast to:", addr)
 	local, err := net.ResolveUDPAddr("udp", net.JoinHostPort(a.ModelInfo.IPAddress, strconv.Itoa(0)))
 	if err != nil {
-		logrus.Print(err)
+		return err
 	}
 	conn, err := net.DialUDP("udp", local, broadcastAddr)
 	if err != nil {
-		logrus.Print(err)
+		return err
 	}
 	defer conn.Close()
 	_, err = conn.Write(msg)
 
 	if err != nil {
-		logrus.Print(err)
+		return err
 	}
+	return nil
 }
 
 // Receive receive data when data incoming
 func (a *AtopGwdClient) Receive(b []byte) {
 	if len(b) == packetlen {
-		logrus.Printf("device:%v receive", a.ModelInfo.IPAddress)
+		q.Q("device:", a.ModelInfo.IPAddress, " receive", a.ModelInfo.IPAddress)
 		if a.getDataflag() && a.getpowerflag() {
 			r := SelectPacket(b)
 			switch r {
 			case invite:
 
-				a.sendDevice()
+				err := a.sendDevice()
+				if err != nil {
+					q.Q(err)
+				}
 
 			case config:
 				if a.compareMac(b) && a.comparAccountAndPwd(b) {

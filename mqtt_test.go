@@ -1,7 +1,6 @@
 package mnms
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -38,34 +37,43 @@ func TestRunMqttClient(t *testing.T) {
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
 		t.Error(token.Error())
 	} else {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			t.Log("TestRunMqttSubscribe")
-			subtoken := client.Subscribe("testtopic", 1, func(client MQTTClient.Client, msg MQTTClient.Message) {
-				t.Log("Received message: ", msg.Payload(), msg.Topic())
-			})
-			subtoken.Wait()
-			if subtoken.Error() != nil {
-				t.Error(subtoken.Error())
-			} else {
-				t.Log("subscripe success")
-			}
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			t.Log("TestRunMqttPublish")
-			receipt := client.Publish("testtopic", 1, false, "test messages")
-			receipt.Wait()
-			if receipt.Error() != nil {
-				t.Error(receipt.Error())
-			} else {
-				t.Log("publish success")
-			}
-		}()
-		wg.Wait()
+		t.Log("subscribe")
+
+		err := RunMqttSubscribe(":11883", "testtopic1")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttSubscribe(":11883", "testtopic2")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttPublish(":11883", "testtopic1", "test messages1")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttPublish(":11883", "testtopic2", "test messages2")
+		if err != nil {
+			t.Error(err)
+		}
+		time.Sleep(250 * time.Millisecond)
+		err = RunMqttUnSubscribe(":11883", "testtopic1")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttUnSubscribe(":11883", "testtopic2")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttPublish(":11883", "testtopic1", "test messages1")
+		if err != nil {
+			t.Error(err)
+		}
+		err = RunMqttPublish(":11883", "testtopic2", "test messages2")
+		if err != nil {
+			t.Error(err)
+		}
+		time.Sleep(250 * time.Millisecond)
+
 	}
 
 }

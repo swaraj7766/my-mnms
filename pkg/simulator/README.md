@@ -65,11 +65,11 @@ import (
 func TestSimulatorFile(t *testing.T) {
     ethName, err := net.GetDefaultInterfaceName()
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	simulators, err := atopyaml.NewSimulatorFile("./test.yaml", ethName)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	for _, v := range simulators {
 		v.StartUp()
@@ -84,13 +84,13 @@ func TestSimulatorFile(t *testing.T) {
 func TestSimulator(t *testing.T) {
     ethName, err := net.GetDefaultInterfaceName()
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	simmap := map[string]atopyaml.Simulator{}
 	simmap["1"] = atopyaml.Simulator{Number: 5, DeviceType: "EH7506", Start_prefixip: "192.168.6.1/24"}
 	simulators, err := atopyaml.NewSimulator(simmap, ethName)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	for _, v := range simulators {
 		v.StartUp()

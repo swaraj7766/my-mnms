@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,11 +18,6 @@ import (
 
 var sim_cidr string
 var sim_mac string
-
-func init() {
-	q.O = "stderr"
-	q.P = ".*"
-}
 
 func TestFirmwareUpgrade(t *testing.T) {
 	// run simultors
@@ -52,15 +46,13 @@ func TestFirmwareUpgrade(t *testing.T) {
 	cmdinfo := make(map[string]CmdInfo)
 	insertcmd(cmd, &cmdinfo)
 
-	jsonBytes, err := json.Marshal(cmdinfo)
-	if err != nil {
-		t.Fatalf("json marshal %v", err)
-	}
-	q.Q(string(jsonBytes))
-
 	go func() {
 		HTTPMain()
 	}()
+	q.Q("wait for root to become ready...")
+	if err := waitForRoot(); err != nil {
+		t.Fatal(err)
+	}
 
 	myName := "test123"
 	_ = cleanMNMSConfig()
@@ -69,37 +61,57 @@ func TestFirmwareUpgrade(t *testing.T) {
 		_ = cleanMNMSConfig()
 	}()
 
-	time.Sleep(1 * time.Second)
 	testurl := fmt.Sprintf("http://localhost:%d/api/v1/register", QC.Port)
-	resp, err := http.Post(testurl,
-		"application/text",
-		bytes.NewBuffer([]byte(myName)))
+	ci := ClientInfo{Name: myName}
+	jsonBytes, err := json.Marshal(ci)
+	if err != nil {
+		t.Fatalf("json marshal %v", err)
+	}
+	resp, err := PostWithToken(testurl, adminToken, bytes.NewBuffer(jsonBytes))
 	if err != nil {
 		t.Fatalf("post %v", err)
 	}
 	if resp != nil {
+		if resp.StatusCode != 200 {
+			t.Fatalf("post StatusCode %d", resp.StatusCode)
+		}
 		q.Q(resp.Header)
+		// save close, in resp != nil block
+		resp.Body.Close()
 	}
+
 	adminToken, err := GetToken("admin")
 	if err != nil {
 		t.Fatalf("get token %v", err)
 	}
-	resp.Body.Close()
+
+	jsonBytes, err = json.Marshal(cmdinfo)
+	if err != nil {
+		t.Fatalf("json marshal %v", err)
+	}
+	q.Q(string(jsonBytes))
 
 	testurl = fmt.Sprintf("http://localhost:%d/api/v1/commands", QC.Port)
 	resp, err = PostWithToken(testurl, adminToken,
 		bytes.NewBuffer(jsonBytes))
+	if resp == nil {
+		t.Fatalf("post resp is nil")
+	}
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("post %v", err)
 	}
+	// save close, already check resp != nil
 	resp.Body.Close()
 
 	testurl = fmt.Sprintf("http://localhost:%d/api/v1/commands?id=%s", QC.Port, myName)
 	resp, err = GetWithToken(testurl, adminToken)
-
+	if resp == nil {
+		t.Fatalf("get resp is nil")
+	}
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("get %v", err)
 	}
+	// save close, already check resp != nil
 	resp.Body.Close()
 
 	// start file test

@@ -2,7 +2,6 @@
 package mnms
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +18,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/jwtauth/v5"
+	"github.com/icza/backscanner"
 	"github.com/influxdata/go-syslog/v3"
+	"github.com/pquerna/otp/totp"
 	"github.com/qeof/q"
 )
 
@@ -65,6 +66,53 @@ func GetWithToken(url, token string) (resp *http.Response, err error) {
 	return resp, nil
 }
 
+func CheckStaticFilesFolder() (string, error) {
+	// check static files folder
+	nmswd, err := CheckMNMSFolder()
+	if err != nil {
+		q.Q(err)
+		nmswd = "."
+	}
+	fileDir := path.Join(nmswd, "files")
+	// check if folder exist
+	if _, err := os.Stat(fileDir); os.IsNotExist(err) {
+		err := os.Mkdir(fileDir, 0755)
+		if err != nil {
+			q.Q(err)
+			return "", err
+		}
+	}
+	return fileDir, nil
+}
+
+// FileServer conveniently sets up a http.FileServer handler to serve
+// static files from a http.FileSystem.
+func FileServer(r chi.Router, path string, root http.FileSystem) {
+	if len(path) == 0 {
+		q.Q("FileServer cannot be used with an empty path")
+
+		return
+	}
+
+	if strings.ContainsAny(path, "{}*") {
+		q.Q("FileServer does not permit any URL parameters.")
+		return
+	}
+
+	if path != "/" && path[len(path)-1] != '/' {
+		r.Get(path, http.RedirectHandler(path+"/", 301).ServeHTTP)
+		path += "/"
+	}
+	path += "*"
+
+	r.Get(path, func(w http.ResponseWriter, r *http.Request) {
+		ctx := chi.RouteContext(r.Context())
+		pathPrefix := strings.TrimSuffix(ctx.RoutePattern(), "/*")
+		fs := http.StripPrefix(pathPrefix, http.FileServer(root))
+		fs.ServeHTTP(w, r)
+	})
+}
+
 // BuildRouter builds http router
 func BuildRouter() http.Handler {
 	r := chi.NewRouter()
@@ -77,7 +125,12 @@ func BuildRouter() http.Handler {
 		AllowCredentials: true,
 	}))
 	r.Use(middleware.SetHeader("Content-Type", "application/json"))
-	r.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("mnms says hello")) })
+	r.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		_, err := w.Write([]byte("mnms says hello"))
+		if err != nil {
+			q.Q(err)
+		}
+	})
 
 	varifySuperUser := func(next http.Handler) http.Handler {
 		return JWTAuthenticatorRole(MNMSSuperUserRole, next)
@@ -86,8 +139,15 @@ func BuildRouter() http.Handler {
 		return JWTAuthenticatorRole(MNMSAdminRole, next)
 	}
 
+	// static file directory
+	fileDir, err := CheckStaticFilesFolder()
+	if err != nil {
+		q.Q(err)
+	}
+
 	r.Route("/api/v1", func(r chi.Router) {
 		r.HandleFunc("/login", HandleLogin)
+		r.Post("/2fa/validate", HandleValidate2FA)
 		r.HandleFunc("/ws", WsEndpoint)
 		r.HandleFunc("/register", HandleRegister)
 
@@ -97,6 +157,7 @@ func BuildRouter() http.Handler {
 			r.Use(varifyAdmin)
 			r.Post("/users", HandleAddUser)
 			r.Put("/users", HandleUpdateUser)
+			r.Delete("/users", HandleDeleteUser)
 		})
 
 		// superuser permission
@@ -109,6 +170,7 @@ func BuildRouter() http.Handler {
 			r.Post("/topology", HandleTopology)
 			r.Get("/syslogs", HandleLocalSyslogs)
 			r.Post("/logs", HandleLogs)
+
 		})
 		// user permission
 		r.Group(func(r chi.Router) {
@@ -119,8 +181,10 @@ func BuildRouter() http.Handler {
 			r.Get("/devices", HandleDevices)
 			r.Get("/topology", HandleTopology)
 			r.Get("/logs", HandleLogs)
-			r.Get("/syslogs", HandleLocalSyslogs)
 			r.Get("/users", HandleUsers)
+			r.HandleFunc("/2fa/secret", Handle2FA)
+
+			FileServer(r, "/files", http.Dir(fileDir))
 		})
 	})
 	return r
@@ -178,16 +242,18 @@ func RespondWithError(w http.ResponseWriter, err error) {
 	w.WriteHeader(http.StatusInternalServerError)
 	errorInfo := make(map[string]string)
 	errorInfo["error"] = fmt.Sprintf("%v", err)
-
 	jsonBytes, err := json.Marshal(errorInfo)
 	if err != nil {
 		q.Q(err)
 		return
 	}
-	_, _ = w.Write(jsonBytes)
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
+	}
 }
 
-func marshalCmdInfo(cmds []byte) (map[string]CmdInfo, error) {
+func unmarshalCmdInfo(cmds []byte) (map[string]CmdInfo, error) {
 	cmddata := make(map[string]CmdInfo)
 	err := json.Unmarshal(cmds, &cmddata)
 	if err != nil {
@@ -196,7 +262,20 @@ func marshalCmdInfo(cmds []byte) (map[string]CmdInfo, error) {
 	return cmddata, nil
 }
 
-// HandleCommands handles the commands
+// HandleCommands accepts the commands and returns command info and history
+//
+// POST /api/v1/commands
+//
+//	   Example parameter: (map[string]CmdInfo)
+//		{ "beep 01-22-33-44-55-66 10.1.1.1" : {}, "devices publish", : {"all": true} }
+//
+// GET /api/v1/commands?id=client1
+//
+//	retrieve commands intended for service client1
+//
+// GET /api/v1/commands?cmd=beep 01-22-33-44-55-66 10.1.1.1
+//
+//	retrieve command status of a particular command
 func HandleCommands(w http.ResponseWriter, r *http.Request) {
 	// enableCors(&w)
 	if r.Method == "POST" {
@@ -207,118 +286,112 @@ func HandleCommands(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer r.Body.Close()
-		cmddata, err := marshalCmdInfo(bodyText)
+		cmddata, err := unmarshalCmdInfo(bodyText)
 		if err != nil {
+			q.Q(err)
 			RespondWithError(w, err)
 			return
 		}
-
-		if QC.IsRoot {
-			rootcmds := make(map[string]CmdInfo)
-			for k, v := range cmddata {
-				if isRootCommand(k) {
-					if v.Status == "" {
-						q.Q(v, "root command, execute right away")
-						if v.Timestamp == "" {
-							v.Timestamp = time.Now().Format(time.RFC3339)
-						}
-						if v.Command == "" {
-							v.Command = k
-						}
-						v.Name = QC.Name
-						rootcmd := RunCmd(&v)
-						QC.CmdMutex.Lock()
-						QC.CmdData[k] = *rootcmd
-						QC.CmdMutex.Unlock()
-						rootcmds[k] = *rootcmd
-					}
+		for k, v := range cmddata {
+			found := false
+			ws := strings.Split(k, " ")
+			if len(ws) < 2 {
+				err = fmt.Errorf("error: invalid short command")
+				RespondWithError(w, err)
+				return
+			}
+			acmd := ws[0]
+			for _, c := range ValidCommands {
+				if c == acmd {
+					found = true
 				}
 			}
-
-			if len(rootcmds) > 0 {
-				resData := cmddata
-				for k, v := range rootcmds {
-					resData[k] = v
-				}
-				bodyText, err = json.Marshal(resData)
-				if err != nil {
-					q.Q(err)
-					RespondWithError(w, err)
-					return
-				}
+			if !found {
+				//err := fmt.Errorf("error: invalid command name %v", acmd)
+				//RespondWithError(w, err)
+				v.Result = "error: invalid command"
+				cmddata[k] = v
 			}
 		}
-
-		UpdateCommands(&cmddata)
-
-		_, _ = w.Write(bodyText)
+		retrieveRootCmd(cmddata)
+		UpdateCmds(&cmddata)
+		_, err = w.Write(bodyText)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
 	id := r.URL.Query().Get("id")
 	cmd := r.URL.Query().Get("cmd")
 	q.Q(id, cmd)
 	// GET
-
 	cmddata := make(map[string]CmdInfo)
-
 	if cmd != "" {
+		q.Q("get cmd info", cmd)
+		// clients wants info on a specific cmd
 		if cmd == "all" {
-			q.Q("all")
+			q.Q("client wants to get all commands")
 			QC.CmdMutex.Lock()
 			cmddata = QC.CmdData
 			QC.CmdMutex.Unlock()
 		} else {
+			q.Q("clients wants", cmd)
 			QC.CmdMutex.Lock()
 			found, ok := QC.CmdData[cmd]
 			QC.CmdMutex.Unlock()
 			if ok {
-				q.Q(found)
 				cmddata[cmd] = found
 			}
+			q.Q(found)
 		}
 		jsonBytes, err := json.Marshal(cmddata)
 		if err != nil {
 			RespondWithError(w, err)
 			return
 		}
-
-		_, _ = w.Write(jsonBytes)
+		_, err = w.Write(jsonBytes)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
-
+	q.Q("get all non status or pending cmds")
+	QC.CmdMutex.Lock()
 	for k, v := range QC.CmdData {
 		if v.Status == "" || strings.HasPrefix(v.Status, "pending:") {
+			if id != "" && v.Client != "" && id != v.Client {
+				continue
+			}
+			if v.Name == QC.Name && QC.IsRoot {
+				continue
+			}
 			cmddata[k] = v
 		}
 	}
-
-	if id != "" {
-		QC.ClientMutex.Lock()
-		client, ok := QC.Clients[id]
-		QC.ClientMutex.Unlock()
-
-		if ok && client != "" {
-			ci := CmdInfo{
-				Timestamp: time.Now().Format(time.RFC3339),
-				Command:   client,
-			}
-			cmddata[client] = ci
-			QC.ClientMutex.Lock()
-			QC.Clients[id] = ""
-			QC.ClientMutex.Unlock()
-		}
-	}
-
+	QC.CmdMutex.Unlock()
+	q.Q("sending to client", cmddata)
 	jsonBytes, err := json.Marshal(cmddata)
 	if err != nil {
 		RespondWithError(w, err)
 		return
 	}
-
-	_, _ = w.Write(jsonBytes)
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
+	}
 }
 
-// HandleDevices handles the devices
+// HandleDevices accepts devices information and stores them and can return device info
+//
+// POST /api/v1/devices
+//
+//		Example parameter: (map[string]DevInfo)
+//	         {"00-60-E9-2D-91-3E": {"mac":"00-60-E9-2D-91-3E","modelname":...},
+//	          "00-60-E9-1F-A6-02":{"mac":"00-60-E9-1F-A6-02","modelname":...}}
+//
+// GET /api/v1/devices
+//
+//	retrieve devices information
 func HandleDevices(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		body, err := ioutil.ReadAll(r.Body)
@@ -333,10 +406,13 @@ func HandleDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, v := range devinfo {
-			//InsertDev(v)
+			// InsertDev(v)
 			InsertDev(v)
 		}
-		_, _ = w.Write(body)
+		_, err = w.Write(body)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
 
@@ -346,20 +422,29 @@ func HandleDevices(w http.ResponseWriter, r *http.Request) {
 		dev, err := FindDev(devid)
 		if err != nil {
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte("error: " + err.Error()))
+			_, err = w.Write([]byte("error: " + err.Error()))
+			if err != nil {
+				q.Q(err)
+			}
 			return
 		}
 		jsonBytes, err := json.Marshal(dev)
 		if err != nil {
 			q.Q(err)
 			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte("error: " + err.Error()))
+			_, err = w.Write([]byte("error: " + err.Error()))
+			if err != nil {
+				q.Q(err)
+			}
 			return
 		}
-		_, _ = w.Write(jsonBytes)
+		_, err = w.Write(jsonBytes)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
-	specialDev := DevInfo{Mac: specialMac, UnixTime: lastUnixTime}
+	specialDev := DevInfo{Mac: specialMac, Timestamp: lastTimestamp}
 	QC.DevMutex.Lock()
 	QC.DevData[specialMac] = specialDev
 	QC.DevMutex.Unlock()
@@ -369,10 +454,21 @@ func HandleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = w.Write(jsonBytes)
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
+	}
 }
 
 // HandleTopology handles the topology
+//
+// POST /api/v1/topology
+//
+//	Example parameter: map[string]Topology
+//
+// GET /api/v1/topology
+//
+//	returns topology
 func HandleTopology(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		body, err := ioutil.ReadAll(r.Body)
@@ -389,8 +485,11 @@ func HandleTopology(w http.ResponseWriter, r *http.Request) {
 		for k, v := range topoinfo {
 			InsertTopology(k, v)
 		}
-		//q.Q(string(body))
-		_, _ = w.Write(body)
+		// q.Q(string(body))
+		_, err = w.Write(body)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
 	jsonBytes, err := json.Marshal(QC.TopologyData)
@@ -399,10 +498,23 @@ func HandleTopology(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = w.Write(jsonBytes)
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
+	}
 }
 
-// HandleRegister handles the register
+// HandleRegister accept client information and returns cluster client information
+//
+// POST /api/v1/register
+//
+//	    Example parameter: ClientInfo{}
+//	             { "client1": { "Name": "client1", "NumDevices": 0, ... },
+//			"client2": { "Name": "client2", "NumDevices": 0, "NumCmds": 0, ...}}
+//
+// GET /api/v1/register
+//
+//	returns cluster client information
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		body, err := ioutil.ReadAll(r.Body)
@@ -410,28 +522,56 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 			RespondWithError(w, err)
 			return
 		}
-		name := string(body)
-		c, ok := QC.Clients[name]
-		if ok {
-			q.Q("already registered", c, r.RemoteAddr)
+		ci := ClientInfo{}
+		err = json.Unmarshal(body, &ci)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		q.Q(ci)
+		name := ci.Name
+		if name == "" {
+			RespondWithError(w, fmt.Errorf("name required"))
+			return
 		}
 		QC.ClientMutex.Lock()
-		QC.Clients[name] = ""
+		QC.Clients[name] = ci
 		QC.ClientMutex.Unlock()
-
-		_, _ = w.Write(body)
+		_, err = w.Write(body)
+		if err != nil {
+			q.Q(err)
+		}
 		return
+	}
+	jsonBytes, err := json.Marshal(QC.Clients)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
 	}
 }
 
 // HandleLogin handles login requests
-// curl -X POST -H 'Accept: application/json'  https://localhost:27182/api/v1/login -d '{"user":"austinchiang@atop.com.tw","password":"admin"}'
-// ! beware this API was changed request body and response body
+//
+// POST  /api/v1/login
+//
+//		Example parameter:
+//		         {"user":"user1@example.com","password":"Pas$word1"}
+//
+//		Response:
+//	     need 2fa : {"sessionID": "sessionID", "user":"user1"}
+//		   {"token": "AAA...", "user": "user1", "role": "admin"}
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		if !QC.IsRoot {
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte("error: only root can issue tokens"))
+			_, err := w.Write([]byte("error: only root can issue tokens"))
+			if err != nil {
+				q.Q(err)
+			}
 			return
 		}
 		type loginBody struct {
@@ -449,21 +589,42 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		token, err := generateJWT(body.User, body.Password)
 		if err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(err.Error()))
+			_, err = w.Write([]byte(err.Error()))
+			if err != nil {
+				q.Q(err)
+			}
 			return
 		}
 		user, err := GetUserConfig(body.User)
 		if err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(err.Error()))
+			_, err = w.Write([]byte(err.Error()))
+			if err != nil {
+				q.Q(err)
+			}
 			return
 		}
 		res := make(map[string]interface{})
+		// check 2fa
+		if user.Enable2FA {
+			sessionID := createLoginSession(*user)
+			res["sessionID"] = sessionID
+			res["user"] = user.Name
+			res["email"] = user.Email
+			err = json.NewEncoder(w).Encode(res)
+			if err != nil {
+				RespondWithError(w, err)
+			}
+			return
+		}
 		res["token"] = token
 		res["user"] = body.User
 		res["role"] = user.Role
 		q.Q(res)
-		json.NewEncoder(w).Encode(res)
+		err = json.NewEncoder(w).Encode(res)
+		if err != nil {
+			RespondWithError(w, err)
+		}
 		// w.Write([]byte(token))
 		return
 	}
@@ -476,7 +637,39 @@ type usersBody struct {
 	Role     string `json:"role"`
 }
 
+// HandleDeleteUser handles delete user requests
+//
+//	 DELETE /api/v1/users
+//
+//	Example parameter: { "name": "abc"}
+func HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	var body usersBody
+	err := json.NewDecoder(r.Body).Decode(&body)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+	defer r.Body.Close()
+	if !UserExist(body.Name) {
+		RespondWithError(w, fmt.Errorf("user %s not exist", body.Name))
+		return
+	}
+	err = DeleteUserConfig(body.Name)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+	_, err = w.Write([]byte("ok"))
+	if err != nil {
+		q.Q(err)
+	}
+}
+
 // HandleUpdateUser handles update user requests
+//
+// PUT /api/v1/users
+//
+//	Example parameter: { "name": "abc", "email": "abc@def.com", "password": "password1" , "role": "admin"}
 func HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	var body usersBody
 	err := json.NewDecoder(r.Body).Decode(&body)
@@ -494,11 +687,20 @@ func HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		RespondWithError(w, err)
 		return
 	}
-	w.Write([]byte("ok"))
+	_, err = w.Write([]byte("ok"))
+
+	if err != nil {
+		RespondWithError(w, err)
+	}
 	return
+
 }
 
 // HandleAddUser handles add user requests
+//
+// POST /api/v1/users
+//
+//	Example parameter: { "name": "abc", "email": "abc@def.com", "password": "Pas$Word1" , "role": "admin"}
 func HandleAddUser(w http.ResponseWriter, r *http.Request) {
 	var body usersBody
 	err := json.NewDecoder(r.Body).Decode(&body)
@@ -518,12 +720,258 @@ func HandleAddUser(w http.ResponseWriter, r *http.Request) {
 		RespondWithError(w, err)
 		return
 	}
-	_, _ = w.Write([]byte("ok"))
+	_, err = w.Write([]byte("ok"))
+	if err != nil {
+		q.Q(err)
+	}
+
+}
+
+// HandleValidate2FA handles 2FA validation requests
+// POST /api/v1/2fa/validate
+// request :{"sessionID":"id", "code":"123456"}
+// Validate 2fa code
+// example response: {"valid": true, "user": "user1", "token": "token", "role": "admin""}
+
+func HandleValidate2FA(w http.ResponseWriter, r *http.Request) {
+	var data map[string]string
+	err := json.NewDecoder(r.Body).Decode(&data)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+	defer r.Body.Close()
+	sessionID := data["sessionID"]
+	code := data["code"]
+	user, err := getLoginSession(sessionID)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+
+	if code == "" {
+		RespondWithError(w, fmt.Errorf("code is empty"))
+		return
+	}
+
+	if !user.Enable2FA {
+		RespondWithError(w, fmt.Errorf("2fa not enabled"))
+		return
+	}
+	secret := user.Secret
+
+	valid := totp.Validate(code, secret)
+	q.Q(code, secret, valid)
+	var token string
+	if !valid {
+
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("invalid code"))
+		return
+
+	}
+	token, err = generateJWT(user.Name, user.Password)
+	if err != nil {
+		RespondWithError(w, err)
+		return
+	}
+
+	res := make(map[string]interface{})
+	res["user"] = user.Name
+	res["token"] = token
+	res["role"] = user.Role
+	err = json.NewEncoder(w).Encode(res)
+	if err != nil {
+		RespondWithError(w, err)
+	}
 	return
 }
 
+// Handle2FA handles 2FA requests
+// GET /api/v1/2fa/secret?user=user1
+// get current user's 2fa secret
+// response : {"user":"user1", "secret":"secret"}
+//
+// POST /api/v1/2fa/secret
+// request body {"user":"user1"}
+// response : {"user":"user1", "secret":"secret"}
+// Generate 2fa secret
+//
+// PUT /api/v1/2fa/secret
+// request body {"user":"user1"}
+// Update 2fa secret
+//
+// DELETE /api/v1/2fa/secret
+// request body {"user":"user1"}
+// Disable user's 2fa
+func Handle2FA(w http.ResponseWriter, r *http.Request) {
+
+	if r.Method == "GET" {
+		userID := r.URL.Query().Get("user")
+		if userID == "" {
+			RespondWithError(w, fmt.Errorf("user is empty"))
+			return
+		}
+		user, err := GetUserConfig(userID)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		if !user.Enable2FA {
+			RespondWithError(w, fmt.Errorf("2fa not enabled"))
+			return
+		}
+		secret := user.Secret
+		res := make(map[string]interface{})
+		res["user"] = userID
+		res["secret"] = secret
+		res["account"] = user.Email
+		res["issuer"] = IssuerOf2FA
+		res["enable2fa"] = user.Enable2FA
+		err = json.NewEncoder(w).Encode(res)
+		if err != nil {
+			RespondWithError(w, err)
+		}
+		return
+	}
+
+	if r.Method == "POST" {
+		var data map[string]string
+		err := json.NewDecoder(r.Body).Decode(&data)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		defer r.Body.Close()
+		userID := data["user"]
+
+		user, err := GetUserConfig(userID)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		if user.Enable2FA {
+			RespondWithError(w, fmt.Errorf("2fa already enabled, use PUT to update"))
+			return
+		}
+		if len(user.Email) == 0 {
+			RespondWithError(w, fmt.Errorf("email is empty"))
+			return
+		}
+		// generate 2fa secret
+		secret, err := generate2FASecret(user.Email)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		// save 2fa secret
+		user.Secret = secret
+		user.Enable2FA = true
+		err = MergeUserConfig(*user)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		// write response
+		res := make(map[string]interface{})
+		res["secret"] = secret
+		res["account"] = user.Email
+		res["issuer"] = IssuerOf2FA
+		res["user"] = userID
+		err = json.NewEncoder(w).Encode(res)
+		if err != nil {
+			RespondWithError(w, err)
+		}
+		return
+	}
+
+	if r.Method == "PUT" {
+		var data map[string]string
+		err := json.NewDecoder(r.Body).Decode(&data)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		defer r.Body.Close()
+		userID := data["user"]
+		user, err := GetUserConfig(userID)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		if !user.Enable2FA {
+			RespondWithError(w, fmt.Errorf("2fa not enabled"))
+			return
+		}
+		if len(user.Email) == 0 {
+			RespondWithError(w, fmt.Errorf("email is empty"))
+			return
+		}
+		// generate 2fa secret
+		secret, err := generate2FASecret(user.Email)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		// save 2fa secret
+		user.Secret = secret
+		err = MergeUserConfig(*user)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		// write response
+		res := make(map[string]interface{})
+		res["secret"] = secret
+		res["account"] = user.Email
+		res["issuer"] = IssuerOf2FA
+		res["user"] = userID
+		err = json.NewEncoder(w).Encode(res)
+		if err != nil {
+			RespondWithError(w, err)
+		}
+		return
+	}
+	if r.Method == "DELETE" {
+		// disable 2fa and delete secret
+		var data map[string]string
+		err := json.NewDecoder(r.Body).Decode(&data)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		defer r.Body.Close()
+		userID := data["user"]
+		user, err := GetUserConfig(userID)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		if !user.Enable2FA {
+			RespondWithError(w, fmt.Errorf("2fa not enabled"))
+			return
+		}
+		user.Enable2FA = false
+		user.Secret = ""
+		err = MergeUserConfig(*user)
+		if err != nil {
+			RespondWithError(w, err)
+			return
+		}
+		// write response
+		_, err = w.Write([]byte("ok"))
+		if err != nil {
+			RespondWithError(w, err)
+		}
+		return
+	}
+}
+
 // HandleUsers handles users requests
-// /api/v1/users
+//
+// GET  /api/v1/users
+//
+//	Example return: { "name": "abc", "email": "abc@def.com", "password": "pass1" , "role": "admin"}
 func HandleUsers(w http.ResponseWriter, r *http.Request) {
 	// get mnms config
 	c, err := GetMNMSConfig()
@@ -543,10 +991,17 @@ func HandleUsers(w http.ResponseWriter, r *http.Request) {
 		RespondWithError(w, err)
 		return
 	}
-	return
 }
 
-// HandleLogs handles logs requests
+// HandleLogs accepts log messages for storage in memory and returns them
+//
+// POST /api/v1/logs
+//
+//	Example paramter: (map[string]Log)
+//
+// GET /api/v1/logs
+//
+//	returns logs from memory
 func HandleLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		body, err := ioutil.ReadAll(r.Body)
@@ -563,7 +1018,10 @@ func HandleLogs(w http.ResponseWriter, r *http.Request) {
 		for _, v := range logs {
 			InsertLogKind(&v)
 		}
-		_, _ = w.Write(body)
+		_, err = w.Write(body)
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
 	jsonBytes, err := json.Marshal(QC.Logs)
@@ -572,12 +1030,20 @@ func HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = w.Write(jsonBytes)
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
+	}
 }
 
-// HandleLogs handles logs requests
+// HandleLocalLogs handles syslogs requests
+//
+// GET /api/v1/syslogs
+//
+// Example parameter: { "start": "2023/02/21 22:06:00", "end": "2023/02/23 22:08:00", "number": 3}
+//
+// returns local syslogs from files
 func HandleLocalSyslogs(w http.ResponseWriter, r *http.Request) {
-
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	n := r.URL.Query().Get("number")
@@ -587,24 +1053,44 @@ func HandleLocalSyslogs(w http.ResponseWriter, r *http.Request) {
 		number = 0
 	}
 
-	readFile, err := os.Open(path.Join(QC.SyslogLocalPath, file))
+	f, err := os.Open(QC.SyslogLocalPath)
 	if err != nil {
-		RespondWithError(w, err)
+		_, err = w.Write([]byte(""))
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
-	fileScanner := bufio.NewScanner(readFile)
-	fileScanner.Split(bufio.ScanLines)
-	logs := []syslog.Base{}
 	defer func() {
-		_ = readFile.Close()
+		_ = f.Close()
 	}()
+	fi, err := f.Stat()
+	if err != nil {
+		_, err = w.Write([]byte(""))
+		if err != nil {
+			q.Q(err)
+		}
+		return
+	}
+	scanner := backscanner.New(f, int(fi.Size()))
+	//fileScanner := bufio.NewScanner(f)
+	//fileScanner.Split(bufio.ScanLines)
+	logs := []syslog.Base{}
 
-	for fileScanner.Scan() {
-		b, t, err := parsingDataofSyslog(fileScanner.Text())
+	for {
+		line, _, err := scanner.LineBytes()
+		if err != nil {
+			if err == io.EOF {
+				q.Q(QC.SyslogLocalPath, "found to EOF")
+			} else {
+				q.Q("err:", err)
+			}
+			break
+		}
+		b, t, err := parsingDataofSyslog(string(line))
 		if err != nil {
 			continue
 		}
-
 		r, err := compareTime(start, end, t.Format(foramt))
 
 		if err != nil {
@@ -625,45 +1111,14 @@ func HandleLocalSyslogs(w http.ResponseWriter, r *http.Request) {
 
 	jsonBytes, err := json.Marshal(&logs)
 	if err != nil {
-		RespondWithError(w, err)
+		_, err = w.Write([]byte(""))
+		if err != nil {
+			q.Q(err)
+		}
 		return
 	}
-	_, _ = w.Write(jsonBytes)
-
-}
-
-// HandleNewUser handles new user creation
-// body {account, role} example {"account":"abc@abc.com", "role":"admin"}
-// example2 {"account":"alan", "role":"admin"}
-func HandleNewUser(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
-		type userdata struct {
-			Account string `json:"account"`
-			Role    string `json:"role"`
-		}
-		var user userdata
-		err := json.NewDecoder(r.Body).Decode(&user)
-		if err != nil {
-			RespondWithError(w, err)
-			return
-		}
-
-		// TODO: hardcode master is not a good idea
-		password, err := GenPassword("mnmsmaster", user.Account)
-		if err != nil {
-			RespondWithError(w, err)
-			return
-		}
-		jsonByte, err := json.Marshal(map[string]string{
-			"account":  user.Account,
-			"password": password,
-		})
-		if err != nil {
-			RespondWithError(w, err)
-			return
-		}
-
-		_, _ = w.Write(jsonByte)
-		return
+	_, err = w.Write(jsonBytes)
+	if err != nil {
+		q.Q(err)
 	}
 }

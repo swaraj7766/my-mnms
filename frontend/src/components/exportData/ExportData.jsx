@@ -102,7 +102,7 @@ const exportPDF = (data, headers, title) => {
   doc.save(getFilename(title));
 };
 
-const getFilename = (title) => {
+export const getFilename = (title) => {
   // For todays date;
   // eslint-disable-next-line no-extend-native
   Date.prototype.today = function () {

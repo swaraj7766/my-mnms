@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 
@@ -10,35 +9,39 @@ import (
 	"mnms/pkg/simulator/net"
 	atopyaml "mnms/pkg/simulator/yaml"
 
-	"github.com/sirupsen/logrus"
+	"github.com/qeof/q"
 	"github.com/spf13/cobra"
 )
 
+func init() {
+	q.O = "stderr"
+	q.P = ""
+}
 func NewRunCmd() *cobra.Command {
 	var runCmd = &cobra.Command{
 		Use:   "run",
 		Short: "simulator run",
 		Run: func(cmd *cobra.Command, args []string) {
-			SetLogLevel(cmd)
 			n, err := cmd.Flags().GetUint16("number")
 			if err != nil {
-				logrus.Fatal(err)
-
+				q.Q(err)
+				return
 			}
 			if n == 0 {
-				logrus.Fatal("no simulator exist")
+				q.Q("no simulator exist")
+				return
 			}
 
 			ethName, err := cmd.Flags().GetString("ethName")
 			if err != nil {
-				logrus.Fatal(err)
-
+				q.Q(err)
+				return
 			}
 
 			yaml, err := cmd.Flags().GetString("yaml")
 			if err != nil {
-				logrus.Fatal(err)
-
+				q.Q(err)
+				return
 			}
 
 			if yaml != "" {
@@ -50,7 +53,11 @@ func NewRunCmd() *cobra.Command {
 
 		},
 	}
-	interfs, value := net.GetAllInterface()
+	interfs, value, err := net.GetAllInterface()
+	if err != nil {
+		panic(err)
+	}
+
 	name, err := net.GetDefaultInterfaceName()
 	if err != nil {
 		if len(interfs) == 0 {
@@ -58,10 +65,10 @@ func NewRunCmd() *cobra.Command {
 		}
 		name = interfs[0].Name
 	}
-	SetLogLevelFlag(runCmd)
 	runCmd.Flags().Uint16P("number", "n", 1, "number of simulator")
 	runCmd.Flags().StringP("ethName", "e", name, fmt.Sprintf("Network Interface Name (ip bind in Network Interface selected)\nexample:%v", value))
 	runCmd.Flags().StringP("yaml", "y", "", "path of yaml file,use yaml to decide simulator type and number")
+	runCmd.Flags().StringVarP(&q.P, "Pattern", "P", "", "debug log pattern")
 	return runCmd
 }
 
@@ -71,14 +78,14 @@ func normalSimulator(n uint16, ethName string) {
 
 		d, err := simulator.NewAtopSimulator(uint(i), ethName)
 		if err != nil {
-			log.Fatal(err)
+			q.Q(err)
 		}
 		_ = d.StartUp()
 		defer func() {
 			_ = d.Shutdown()
 		}()
 	}
-	log.Printf("simulator number:%v", n)
+	q.Q("simulator number:", n)
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	<-c
@@ -88,7 +95,7 @@ func yamlSimulator(ethName string, path string) {
 
 	simulators, err := atopyaml.NewSimulatorFile(path, ethName)
 	if err != nil {
-		log.Fatal(err)
+		q.Q(err)
 	}
 	for _, v := range simulators {
 		_ = v.StartUp()
@@ -97,7 +104,7 @@ func yamlSimulator(ethName string, path string) {
 		}(v)
 		//pcapServer.RegisterReceiveEvent(v.ModelInfo.MACAddress, v.Receive)
 	}
-	log.Printf("simulator number:%v", len(simulators))
+	q.Q("simulator number:", len(simulators))
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	<-c

@@ -1,17 +1,13 @@
 package mnms
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
 
 	"github.com/qeof/q"
 )
-
-func init() {
-	q.O = "stderr"
-	q.P = ".*"
-}
 
 func TestCleanStr(t *testing.T) {
 	str := CleanStr("\"Managed, 3.2\"")
@@ -49,4 +45,12 @@ func TestCheckFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestToken(t *testing.T) {
+	admintoken, err := GetToken("admin")
+	if err != nil {
+		t.Fatalf("error: get token %v", err)
+	}
+	fmt.Println(admintoken)
 }

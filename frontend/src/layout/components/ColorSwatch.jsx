@@ -50,6 +50,7 @@ const ColorSwatch = () => {
           borderRadius: token.borderRadius,
           cursor: "pointer",
           boxShadow: token.boxShadow,
+          width: "52px",
         }}
       >
         <div

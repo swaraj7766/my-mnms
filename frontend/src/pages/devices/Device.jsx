@@ -4,6 +4,7 @@ import Icon, {
   ExclamationCircleFilled,
   GlobalOutlined,
   PoweroffOutlined,
+  SaveOutlined,
   SoundOutlined,
 } from "@ant-design/icons";
 import {
@@ -40,7 +41,7 @@ import {
   RequestRebootDevice,
 } from "../../features/singleDeviceConfigurations/rebootDeviceSlice";
 import ExportData from "../../components/exportData/ExportData";
-import { openSyslogSettingDrawer } from "../../features/singleDeviceConfigurations/singleSyslogSetting";
+import { RequestGetSyslogSetting } from "../../features/singleDeviceConfigurations/singleSyslogSetting";
 import { MdAcUnit, MdAddTask, MdEvent, MdCloud } from "react-icons/md";
 import {
   clearEnableSNMPData,
@@ -49,19 +50,24 @@ import {
 } from "../../features/singleDeviceConfigurations/enableSNMPDeciceSlice";
 import { openTrapSettingDrawer } from "../../features/singleDeviceConfigurations/singleTrapSetting";
 import { openFwUpdateDrawer } from "../../features/singleDeviceConfigurations/updateFirmwareDeviceSlice";
-import ScanButtonControl from "../../components/devices/ScanButtonControl";
+import {
+  clearSaveConfig,
+  openSaveConfigDrawer,
+  saveRunningConfigSelector,
+} from "../../features/singleDeviceConfigurations/saveRunningConfigSlice";
+//import ScanButtonControl from "../../components/devices/ScanButtonControl";
 
 const { Title, Text } = Typography;
 
 const columns = [
   {
     title: "Online/Offline",
-    dataIndex: "arpmissed",
-    key: "arpmissed",
+    dataIndex: "timeDiff",
+    key: "timeDiff",
     width: 100,
     fixed: "left",
     render: (data) =>
-      data && data > 1 ? (
+      data && data > 90 ? (
         <Badge status="error" text="Offline" className="cutomBadge" />
       ) : (
         <Badge
@@ -85,6 +91,13 @@ const columns = [
     dataIndex: "modelname",
     key: "modelname",
     sorter: (a, b) => (a.model > b.model ? 1 : -1),
+  },
+  {
+    title: "Client info",
+    width: 150,
+    dataIndex: "scannedby",
+    key: "scannedby",
+    sorter: (a, b) => (a.scannedby > b.scannedby ? 1 : -1),
   },
   {
     title: "MAC Address",
@@ -118,48 +131,7 @@ const columns = [
   },
 ];
 
-const items = [
-  {
-    label: "Open in web",
-    key: "openweb",
-    icon: <GlobalOutlined />,
-  },
-  {
-    label: "Beep",
-    key: "beep",
-    icon: <SoundOutlined />,
-  },
-  {
-    label: "Reboot",
-    key: "reboot",
-    icon: <PoweroffOutlined />,
-  },
-  {
-    label: "Network Setting",
-    key: "networkSetting",
-    icon: <ApartmentOutlined />,
-  },
-  {
-    label: "Syslog Setting",
-    key: "syslogSetting",
-    icon: <Icon component={MdEvent} />,
-  },
-  {
-    label: "Trap Setting",
-    key: "trapSetting",
-    icon: <Icon component={MdAcUnit} />,
-  },
-  {
-    label: "Enable SNMP",
-    key: "enablesnmp",
-    icon: <Icon component={MdAddTask} />,
-  },
-  {
-    label: "Upload Firmware",
-    key: "uploadFirmware",
-    icon: <Icon component={MdCloud} />,
-  },
-];
+var items = [];
 
 const DeviceDashboard = () => {
   const actionRef = useRef();
@@ -181,6 +153,104 @@ const DeviceDashboard = () => {
   const dispatch = useDispatch();
   const { token } = antdTheme.useToken();
   const { deviceData, scanning } = useSelector(inventorySliceSelector);
+  const { errorSaveRunningConfig, saveRunningConfigStatus } = useSelector(
+    saveRunningConfigSelector
+  );
+
+  const nmsuserrole = sessionStorage.getItem("nmsuserrole");
+  if (nmsuserrole === "user") {
+    items = [
+      {
+        label: "Beep",
+        key: "beep",
+        icon: <SoundOutlined />,
+      },
+      {
+        label: "Reboot",
+        key: "reboot",
+        icon: <PoweroffOutlined />,
+      },
+      {
+        label: "Network Setting",
+        key: "networkSetting",
+        icon: <ApartmentOutlined />,
+      },
+      {
+        label: "Syslog Setting",
+        key: "syslogSetting",
+        icon: <Icon component={MdEvent} />,
+      },
+      {
+        label: "Trap Setting",
+        key: "trapSetting",
+        icon: <Icon component={MdAcUnit} />,
+      },
+      {
+        label: "Enable SNMP",
+        key: "enablesnmp",
+        icon: <Icon component={MdAddTask} />,
+      },
+      {
+        label: "Upload Firmware",
+        key: "uploadFirmware",
+        icon: <Icon component={MdCloud} />,
+      },
+      {
+        label: "Save Running Config",
+        key: "saveConfig",
+        icon: <SaveOutlined />,
+      },
+    ];
+  } else {
+    items = [
+      {
+        label: "Open in web",
+        key: "openweb",
+        icon: <GlobalOutlined />,
+      },
+      {
+        label: "Beep",
+        key: "beep",
+        icon: <SoundOutlined />,
+      },
+      {
+        label: "Reboot",
+        key: "reboot",
+        icon: <PoweroffOutlined />,
+      },
+      {
+        label: "Network Setting",
+        key: "networkSetting",
+        icon: <ApartmentOutlined />,
+      },
+      {
+        label: "Syslog Setting",
+        key: "syslogSetting",
+        icon: <Icon component={MdEvent} />,
+      },
+      {
+        label: "Trap Setting",
+        key: "trapSetting",
+        icon: <Icon component={MdAcUnit} />,
+      },
+      {
+        label: "Enable SNMP",
+        key: "enablesnmp",
+        icon: <Icon component={MdAddTask} />,
+      },
+      {
+        label: "Upload Firmware",
+        key: "uploadFirmware",
+        icon: <Icon component={MdCloud} />,
+      },
+      {
+        label: "Save Running Config",
+        key: "saveConfig",
+        icon: <SaveOutlined />,
+      },
+    ];
+  }
+
   useEffect(() => {
     dispatch(getInventoryData());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -268,16 +338,21 @@ const DeviceDashboard = () => {
     }
   }, [networkSettingStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (saveRunningConfigStatus && saveRunningConfigStatus !== "in_progress") {
+      if (saveRunningConfigStatus === "success") {
+        notification.success({ message: errorSaveRunningConfig });
+        dispatch(clearSaveConfig());
+      } else {
+        notification.error({ message: errorSaveRunningConfig });
+        dispatch(clearSaveConfig());
+      }
+    }
+  }, [saveRunningConfigStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleContextMenuClick = (key, data) => {
-    const {
-      ipaddress,
-      mac,
-      netmask,
-      gateway,
-      hostname,
-      isDHCP = false,
-      modelname,
-    } = data;
+    const { ipaddress, mac, netmask, gateway, hostname, isdhcp, modelname } =
+      data;
 
     switch (key) {
       case "openweb":
@@ -383,13 +458,13 @@ const DeviceDashboard = () => {
             hostname,
             new_ip_address: ipaddress,
             modelname,
-            isDHCP,
+            isdhcp,
           })
         );
         break;
       case "syslogSetting":
         dispatch(
-          openSyslogSettingDrawer({
+          RequestGetSyslogSetting({
             mac,
             modelname,
           })
@@ -407,6 +482,14 @@ const DeviceDashboard = () => {
       case "uploadFirmware":
         dispatch(
           openFwUpdateDrawer({
+            mac,
+            modelname,
+          })
+        );
+        break;
+      case "saveConfig":
+        dispatch(
+          openSaveConfigDrawer({
             mac,
             modelname,
           })
@@ -465,9 +548,8 @@ const DeviceDashboard = () => {
               <ExportData
                 Columns={columns}
                 DataSource={deviceData}
-                title="Inventory Device List"
+                title="Inventory_Device_List"
               />,
-              <ScanButtonControl />,
             ],
           }}
           options={{

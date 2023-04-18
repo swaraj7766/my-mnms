@@ -12,7 +12,7 @@ import (
 	"github.com/tatsushid/go-fastping"
 )
 
-//Get local IP list
+// Get local IP list
 func GetLocalIP() ([]string, error) {
 	ips := make([]string, 0)
 	ifaces, err := net.Interfaces()
@@ -47,7 +47,7 @@ func GetLocalIP() ([]string, error) {
 	return ips, nil
 }
 
-//check ip format
+// check ip format
 func CheckIPAddress(ip string) error {
 	if net.ParseIP(ip) == nil {
 		return fmt.Errorf("IP Address: %s - Invalid", ip)
@@ -56,7 +56,7 @@ func CheckIPAddress(ip string) error {
 	}
 }
 
-//check Mac format
+// check Mac format
 func CheckMacAddress(mac string) error {
 	_, err := net.ParseMAC(mac)
 	if err != nil {
@@ -66,7 +66,7 @@ func CheckMacAddress(mac string) error {
 	}
 }
 
-//check device exist
+// check device exist
 func CheckDeviceExisted(ip string) bool {
 	r := false
 	p := fastping.NewPinger()
@@ -89,11 +89,11 @@ func CheckDeviceExisted(ip string) bool {
 	return r
 }
 
-//CheckIsInSubnet check ip if in subnet
+// CheckIsInSubnet check ip if in subnet
 //
-//ip:"192.168.5.25" network:"192.168.5.1/24"
+// ip:"192.168.5.25" network:"192.168.5.1/24"
 //
-//return true
+// return true
 func CheckIsInSubnet(ip, network string) (bool, error) {
 	_, subnet, err := net.ParseCIDR(network)
 	if err != nil {
@@ -108,7 +108,7 @@ func CheckIsInSubnet(ip, network string) (bool, error) {
 
 }
 
-//GetInterfaceIps get ipv4 ips of Interface
+// GetInterfaceIps get ipv4 ips of Interface
 func GetInterfaceIps(name string) ([]string, error) {
 	ief, err := net.InterfaceByName(name)
 	if err != nil {
@@ -128,7 +128,7 @@ func GetInterfaceIps(name string) ([]string, error) {
 	return ips, nil
 }
 
-//GetAllInterfaceIps get ips of all Interface
+// GetAllInterfaceIps get ips of all Interface
 func GetAllInterfaceIps() (map[string][]string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -504,6 +504,10 @@ func GetIfaceCidrMulti(iface net.Interface) ([]string, error) {
 			}
 			cidrStr = addr.String()
 			ipPart, ipnetPart, err := net.ParseCIDR(cidrStr)
+			if err != nil {
+				q.Q(err)
+				continue
+			}
 			ipStr := ipPart.String()
 			ip, err := netip.ParseAddr(ipStr)
 			q.Q(ipStr, ip, ipPart, ipnetPart)

@@ -10,6 +10,7 @@ import {
   topologySelector,
   getGraphDataOnClientChange,
 } from "../../features/topology/topologySlice";
+import { getFilename } from "../../components/exportData/ExportData";
 
 const TopologyPage = () => {
   const dispatch = useDispatch();
@@ -18,6 +19,9 @@ const TopologyPage = () => {
   const [datas, setDatas] = useState(null);
   const [, setRef] = React.useState(null);
   const [config, setConfig] = useState(null);
+  const prevTopologyNodesData = JSON.parse(
+    sessionStorage.getItem("prevTopologyNodesData")
+  );
 
   useEffect(() => {
     setConfig({
@@ -51,6 +55,9 @@ const TopologyPage = () => {
               </tspan>
               <tspan dy="1.2em" x="0" fill={token.colorText}>
                 {n.ipAddress}
+              </tspan>
+              <tspan dy="1.2em" x="0" fill={token.colorText}>
+                {n.modelname}
               </tspan>
             </>
           ) : (
@@ -91,11 +98,12 @@ const TopologyPage = () => {
       }
     });
     setDatas((prev) => ({ ...prev, nodes }));
+    sessionStorage.setItem("prevTopologyNodesData", JSON.stringify(nodes));
   };
 
-  const onClickNode = function (nodeId) {
+  const onClickNode = function (nodeId, nodeObj) {
     //setDatas((prev) => ({ ...prev, focusedNodeId: nodeId }));
-    window.alert(`Clicked node ${nodeId}`);
+    window.alert(`Clicked node ${nodeId}, Model name: ${nodeObj.modelname}`);
   };
 
   const onClickLink = function (source, target) {
@@ -108,9 +116,25 @@ const TopologyPage = () => {
 
   useEffect(() => {
     // console.log(graphData);
+    let nodes = [];
     if (graphData.nodes !== undefined) {
-      const nodes = graphData?.nodes?.map((node) => {
-        return { ...node, svg: TopologyImage(node.model) };
+      nodes = graphData?.nodes?.map((node) => {
+        let x = undefined;
+        let y = undefined;
+        prevTopologyNodesData?.map((prevNode) => {
+          if (node.id === prevNode.id) {
+            if (prevNode.x !== undefined || prevNode.y !== undefined) {
+              x = prevNode.x;
+              y = prevNode.y;
+            }
+          }
+        });
+        return {
+          ...node,
+          svg: TopologyImage(node.model),
+          x: x,
+          y: y,
+        };
       });
       const links = graphData?.links?.map((link) => {
         return { ...link };
@@ -124,7 +148,7 @@ const TopologyPage = () => {
     //console.log(newZoom);
   };
 
-  const prepareDatas = () => {
+  const prepareDatas = (datas) => {
     const nodes = datas.nodes.map((data) => {
       if (data.x === undefined || data.y === undefined) {
         return {
@@ -155,7 +179,7 @@ const TopologyPage = () => {
       })
       .then(function (dataUrl) {
         /* do something */
-        saveAs(dataUrl, `raj.svg`);
+        saveAs(dataUrl, `${getFilename("topology")}.svg`);
       });
   };
 
@@ -213,7 +237,7 @@ const TopologyPage = () => {
         >
           <Graph
             id="topology-graph-id" // id is mandatory
-            data={prepareDatas()}
+            data={prepareDatas(datas)}
             config={config}
             onClickNode={onClickNode}
             onClickLink={onClickLink}

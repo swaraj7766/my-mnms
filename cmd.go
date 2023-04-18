@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,72 +12,124 @@ import (
 	"github.com/ziutek/telnet"
 )
 
-type CmdInfo struct {
-	Timestamp string `json:"timestamp"`
-	Command   string `json:"command"`
-	Result    string `json:"result"`
-	Status    string `json:"status"`
-	Name      string `json:"name"`
-	Retries   int    `json:"retries"`
+// ValidCommands is a list of valid commands
+//
+// Keep this list up to date
+var ValidCommands []string = []string{
+	"config", "mtderase", "beep", "reset", "scan", "switch", "snmp",
+	"log", "firmware", "mqtt", "opcua", "help", "util",
 }
 
-const telnet_timeout = 10 * time.Second
+// cmd status
+type cmdStats int
+
+const (
+	running cmdStats = iota
+)
+
+func (c cmdStats) String() string {
+	switch c {
+	case running:
+		return "running"
+	}
+	return "unknown"
+}
+
+// CmdInfo contains a command, a unit of API call
+//
+// A command is a API call that is executed in a distributed environement.
+//
+// A command created by the user and inserted at Root may be replicated
+// to clients. A client that is capable of executing the command will
+// run the command and return the result by reporting back to the Root.
+type CmdInfo struct {
+	Kind        string `json:"kind"`
+	Timestamp   string `json:"timestamp"`
+	Command     string `json:"command"`
+	Result      string `json:"result"`
+	Status      string `json:"status"`
+	Name        string `json:"name"`
+	Retries     int    `json:"retries"`
+	NoOverwrite bool   `json:"nooverwrite"`
+	All         bool   `json:"all"`
+	NoSyslog    bool   `json:"nosyslog"`
+	Client      string `json:"client"`
+	DevId       string `json:"devid"`
+	Tag         string `json:"tag"`
+}
+
+const telnet_timeout = 10 * time.Second // XXX
 
 func init() {
 	QC.CmdData = make(map[string]CmdInfo)
 }
 
-func InsertCli(cmd string) {
-	// command line support to allow mnmsctl cli commands.
-	// cli commands are same as api calls.
+// InsertCmd inserts command information into command data list.
+//
+// It is called by  UpdateCmds when commands are posted via http.
+func InsertCmd(cmd string, cmdinfo CmdInfo) {
 	q.Q(cmd)
-	// special handling for commands that must run on all connected
-	// clients.  root may have multiple clients connected.
-	// some commands like scan snmp must be issued to all of them.
-	if strings.HasPrefix(cmd, "all") {
-		ws := strings.Split(cmd, " ")
-		if len(ws) < 2 {
-			q.Q("error: invalid command")
-			return
-		}
-		cmd = strings.Join(ws[1:], " ")
-		// horrible hack to have one-shot slot for commands going to all
-		QC.ClientMutex.Lock()
-		defer QC.ClientMutex.Unlock()
-		for _, v := range QC.Clients {
-			if v != "" {
-				q.Q("error: one shot filled")
-				return
+	if cmdinfo.Command == "" {
+		cmdinfo.Command = cmd
+		q.Q("set command", cmdinfo)
+	}
+	if cmdinfo.All {
+		// insert an instance of the special 'all' command for each client
+		for cl := range QC.Clients {
+			// per client command has prefix @client cmd ...
+			kcmd := "@" + cl + " " + cmd
+			q.Q(kcmd)
+			ci := cmdinfo
+			ci.Timestamp = time.Now().Format(time.RFC3339)
+			ci.Client = cl // along with @client, this indicates client cmd
+			QC.CmdMutex.Lock()
+			_, ok := QC.CmdData[kcmd]
+			QC.CmdMutex.Unlock()
+			if ok {
+				if ci.NoOverwrite {
+					q.Q("error: cmd exists already", ci)
+					continue
+				}
 			}
+			QC.CmdMutex.Lock()
+			QC.CmdData[kcmd] = ci
+			QC.CmdMutex.Unlock()
 		}
-		//TODO: mechanism to forcibly empty the one shot per client
-		for k, _ := range QC.Clients {
-			QC.Clients[k] = cmd
-		}
-		q.Q(QC.Clients)
 		return
 	}
-
-	//normal commands get queued
-	cmdinfo := CmdInfo{
-		Timestamp: time.Now().Format(time.RFC3339),
-		Command:   cmd,
+	QC.CmdMutex.Lock()
+	_, ok := QC.CmdData[cmd]
+	QC.CmdMutex.Unlock()
+	if ok {
+		if cmdinfo.NoOverwrite {
+			q.Q("error: cmd exists already", cmd)
+			return
+		}
 	}
+	cmdinfo.Timestamp = time.Now().Format(time.RFC3339)
 	QC.CmdMutex.Lock()
 	QC.CmdData[cmd] = cmdinfo
 	QC.CmdMutex.Unlock()
 }
 
-func InsertCommands(cmddata *map[string]CmdInfo) {
-	// these are commands that are downloaded from root probably.
-	// insert into local queue
+// InsertDownCmds puts downloaded command data into local CmdData[].
+//
+// Root maintains its own command data list.  Each client node service
+// downloads commands from the Root periodically.
+//
+// InsertDownCmds is called by CheckCmds which is periodically called
+// from the main service go routine.
+func InsertDownCmds(cmddata *map[string]CmdInfo) {
+	q.Q(cmddata)
 	for k, v := range *cmddata {
 		QC.CmdMutex.Lock()
 		_, ok := QC.CmdData[k]
 		QC.CmdMutex.Unlock()
 		if ok {
-			q.Q("cmd exists already", v)
-			continue
+			if v.NoOverwrite {
+				q.Q("error: cmd exists already", v)
+				continue
+			}
 		}
 		v.Name = QC.Name
 		QC.CmdMutex.Lock()
@@ -88,27 +139,34 @@ func InsertCommands(cmddata *map[string]CmdInfo) {
 	}
 }
 
-func UpdateCommands(cmddata *map[string]CmdInfo) {
+// UpdateCmds is called when clients post commands via http.
+//
+// CLI may post commands via http to allow command line access to API.
+// An http client may post commands to send command via rest API.
+//
+// UpdateCmds will call InsertCmd to record the command
+// into local command information list.
+func UpdateCmds(cmddata *map[string]CmdInfo) {
 	q.Q(cmddata)
 	// if root is collecting command status from clients,
 	// updates from each client will be aggregated.
 	// update command status in the queue
 	for k, v := range *cmddata {
 		if v.Status == "" {
-			if v.Command == "" {
-				v.Command = k
-			}
-			InsertCli(v.Command)
+			InsertCmd(k, v)
 			continue
 		}
-
 		QC.CmdMutex.Lock()
 		found, ok := QC.CmdData[k]
 		QC.CmdMutex.Unlock()
-
 		// don't override ok result command history
-		if ok && found.Status == "ok" {
-			continue
+		if ok {
+			if found.Status == "ok" {
+				continue
+			}
+			if strings.HasPrefix(found.Status, "error:") {
+				continue
+			}
 		}
 		// fill in missing timestamp
 		if v.Timestamp == "" {
@@ -117,21 +175,22 @@ func UpdateCommands(cmddata *map[string]CmdInfo) {
 		QC.CmdMutex.Lock()
 		QC.CmdData[k] = v
 		QC.CmdMutex.Unlock()
-
-		q.Q(found, v)
+		q.Q("cmd updated", found, v)
 	}
 }
 
-func CheckCommands() error {
-
-	// this runs periodically to download commands, run and update results
-	if QC.Root != "" {
+// CheckCmds runs in client node services and periodically
+// download commands from the Root service and run commands and
+// update the results back to the Root service.
+func CheckCmds() error {
+	if QC.RootURL != "" {
 		// if there is a URL to the root we download from it
-		resp, err := GetWithToken(QC.Root+"/api/v1/commands?id="+QC.Name, QC.AdminToken)
+		resp, err := GetWithToken(QC.RootURL+"/api/v1/commands?id="+QC.Name, QC.AdminToken)
 		if err != nil {
 			return err
 		}
 		if resp != nil {
+			// save close
 			defer resp.Body.Close()
 			cmddata := make(map[string]CmdInfo)
 			//json.NewDecoder(resp.Body).Decode(&cmddata)
@@ -145,77 +204,101 @@ func CheckCommands() error {
 			}
 			//q.Q("downloaded cmds", cmddata)
 			if len(cmddata) > 0 {
-				InsertCommands(&cmddata)
+				InsertDownCmds(&cmddata)
 			}
 		}
 	}
 
-	//XXX this mutex lockout can be very long
+	// XXX this mutex lockout can be very long
 	QC.CmdMutex.Lock()
 	for k, v := range QC.CmdData {
-		if v.Status != "" &&
-			!strings.HasPrefix(v.Status, "pending:") {
+		if v.Status != "" && !strings.HasPrefix(v.Status, "pending:") {
 			continue
 		}
-		q.Q("run cmd", v)
-		// XXX cannot go RunCmd() because of ordering
+		// cannot use goroutine because of ordering
 		res := RunCmd(&v)
 		QC.CmdData[k] = v
 		q.Q(res)
 	}
 	QC.CmdMutex.Unlock()
 
-	if QC.Root != "" { //always check for root URL to run even when no root
+	if QC.RootURL != "" { //always check for root URL to run even when no root
 		// update results back to root
 		QC.CmdMutex.Lock()
 		jsonBytes, err := json.Marshal(QC.CmdData)
 		QC.CmdMutex.Unlock()
-
+		// TODO delete finished and updated commands
 		if err != nil {
 			return err
 		}
-		resp, err := PostWithToken(QC.Root+"/api/v1/commands", QC.AdminToken, bytes.NewBuffer(jsonBytes))
+		resp, err := PostWithToken(QC.RootURL+"/api/v1/commands", QC.AdminToken, bytes.NewBuffer(jsonBytes))
 		if err != nil {
 			return err
 		}
 		//q.Q("updated commands", QC.CmdData)
 		if resp != nil {
 			q.Q(resp.Header)
+			// save close
+			resp.Body.Close()
 		}
-		resp.Body.Close()
 	}
 	return nil
 }
 
 func RunCmd(cmdinfo *CmdInfo) *CmdInfo {
-	//main cmd run dispatch
-
-	// commands == api
-
-	// basic commands: reset, reboot, beep
-	// scan commands
-	// config commands -- "basic" config commands
-	// snmp commands
-	// log commands -- debugging
-	// devices commands
-
-	//TODO group command handling -- sending to multiple devices
+	defer func() {
+		if cmdinfo.Status != "" && !cmdinfo.NoSyslog {
+			jsonBytes, err := json.Marshal(cmdinfo)
+			if err != nil {
+				q.Q(err)
+			}
+			err = SendSyslog(LOG_NOTICE, "RunCmd", string(jsonBytes))
+			q.Q("sending syslog", string(jsonBytes))
+			if err != nil {
+				q.Q("error: sending syslog", err)
+			}
+		}
+	}()
 	q.Q(cmdinfo)
+	if strings.HasPrefix(cmdinfo.Status, "error:") {
+		q.Q("error: cmd Status already error, will not run")
+		return cmdinfo
+	}
 	cmd := cmdinfo.Command
+	if !cmdinfo.All && cmdinfo.Client != "" {
+		if cmdinfo.Client != QC.Name {
+			q.Q("error: wrong client cmd", cmd, QC.Name)
+			return cmdinfo
+		}
+	}
+	cmdinfo.Name = QC.Name
+	q.Q(cmd)
 	if strings.HasPrefix(cmdinfo.Status, "pending:") {
 		cmdinfo.Retries++
 	}
+	if cmdinfo.Retries > 3 {
+		if cmdinfo.DevId != "" {
+			devId := cmdinfo.DevId
+			dev, err := FindDev(devId)
+			if err != nil {
+				cmdinfo.Status = "error: cancelled, device does not exist in inventory"
+				return cmdinfo
+			}
+			q.Q("warning: cancelling cmd for device in inventory, may need to issue explicit client specific command", dev.ScannedBy, cmdinfo.Name)
+		}
 
-	if strings.HasPrefix(cmd, "reset") {
-		return ResetCmd(cmdinfo)
+		cmdinfo.Status = "error: cancelled, too many retries"
+		return cmdinfo
+	}
+	if strings.HasPrefix(cmd, "mtderase") {
+		return MtdEraseCmd(cmdinfo)
 	}
 	if strings.HasPrefix(cmd, "beep") {
 		return BeepCmd(cmdinfo)
 	}
-	if strings.HasPrefix(cmd, "reboot") {
-		return RebootCmd(cmdinfo)
+	if strings.HasPrefix(cmd, "reset") {
+		return ResetCmd(cmdinfo)
 	}
-
 	if strings.HasPrefix(cmd, "scan") {
 		return ScanCmd(cmdinfo)
 	}
@@ -232,24 +315,12 @@ func RunCmd(cmdinfo *CmdInfo) *CmdInfo {
 		return SnmpCmd(cmdinfo)
 	}
 
-	if strings.HasPrefix(cmd, "devices") {
-		return DevicesCmd(cmdinfo)
-	}
-
 	if strings.HasPrefix(cmd, "log") {
 		return LogCmd(cmdinfo)
 	}
 
 	if strings.HasPrefix(cmd, "firmware") {
 		return FirmwareCmd(cmdinfo)
-	}
-
-	if strings.HasPrefix(cmd, "command") {
-		return CommandCmd(cmdinfo)
-	}
-
-	if strings.HasPrefix(cmd, "arp") {
-		return ArpCmd(cmdinfo)
 	}
 
 	if strings.HasPrefix(cmd, "mqtt") {
@@ -285,6 +356,16 @@ func RunCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
+// Beep target device.
+//
+// Usage : beep [mac address] [ip address]
+//
+//	[mac address] : target device mac address
+//	[ip address]  : target device ip address
+//
+// Example :
+//
+//	beep AA-BB-CC-DD-EE-FF 10.0.50.1
 func BeepCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -295,21 +376,40 @@ func BeepCmd(cmdinfo *CmdInfo) *CmdInfo {
 	macaddr := ws[1]
 	ipaddr := ws[2]
 	q.Q(ipaddr, macaddr)
-	_, err := FindDev(macaddr)
-	if err != nil {
+	cmdinfo.DevId = macaddr
+	dev, err := FindDev(macaddr)
+	if err != nil || dev.IPAddress != ipaddr {
 		cmdinfo.Status = "pending: device not found"
+		return cmdinfo
+	}
+	// validate ipaddr
+	err = CheckIPAddress(ipaddr)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
 		return cmdinfo
 	}
 	err = GwdBeep(ipaddr, macaddr)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
 	return cmdinfo
 }
 
-func RebootCmd(cmdinfo *CmdInfo) *CmdInfo {
+// Reset/Reboot target device.
+//
+// Usage : reset [mac address] [ip address] [username] [password]
+//
+//	[mac address] : target device mac address
+//	[ip address]  : target device ip address
+//	[username]    : target device login user name
+//	[password]    : target device login passwaord
+//
+// Example :
+//
+//	reset AA-BB-CC-DD-EE-FF 10.0.50.1 admin default
+func ResetCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
 	if len(ws) < 5 {
@@ -318,21 +418,49 @@ func RebootCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	var macaddr, ipaddr, username, password string
 	Unpack(ws[1:], &macaddr, &ipaddr, &username, &password)
-	_, err := FindDev(macaddr)
-	if err != nil {
+	cmdinfo.DevId = macaddr
+	dev, err := FindDev(macaddr)
+	if err != nil || dev.IPAddress != ipaddr {
 		cmdinfo.Status = "pending: device not found"
 		return cmdinfo
 	}
-	err = GwdReboot(ipaddr, macaddr, username, password)
+	b, err := DevIsLocked(macaddr)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+	if b {
+		cmdinfo.Status = fmt.Sprintf("error:%v", "device is upgrading")
+		return cmdinfo
+	}
+	// validate ipaddr
+	err = CheckIPAddress(ipaddr)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+	err = GwdReset(ipaddr, macaddr, username, password)
+	if err != nil {
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
 	return cmdinfo
 }
 
-func ResetCmd(cmdinfo *CmdInfo) *CmdInfo {
+// Erase target device mtd and restore default settings.
+//
+// Usage : mtderase [mac address] [ip address] [username] [password]
+//
+//	[mac address] : target device mac address
+//	[ip address]  : target device ip address
+//	[username]    : target device login user name
+//	[password]    : target device login passwaord
+//
+// Example :
+//
+//	mtderase AA-BB-CC-DD-EE-FF 10.0.50.1 admin default
+func MtdEraseCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
 	if len(ws) < 5 {
@@ -342,14 +470,31 @@ func ResetCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	var macaddr, ipaddr, username, password string
 	Unpack(ws[1:], &macaddr, &ipaddr, &username, &password)
-	_, err := FindDev(macaddr)
-	if err != nil {
+	cmdinfo.DevId = macaddr
+	dev, err := FindDev(macaddr)
+	if err != nil || dev.IPAddress != ipaddr {
 		cmdinfo.Status = "pending: device not found"
 		return cmdinfo
 	}
-	err = GwdReset(ipaddr, macaddr, username, password)
+	b, err := DevIsLocked(macaddr)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+	if b {
+		cmdinfo.Status = fmt.Sprintf("error:%v", "device is upgrading")
+		return cmdinfo
+	}
+
+	// validate ipaddr
+	err = CheckIPAddress(ipaddr)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+	err = GwdMtdErase(ipaddr, macaddr, username, password)
+	if err != nil {
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
@@ -357,14 +502,80 @@ func ResetCmd(cmdinfo *CmdInfo) *CmdInfo {
 }
 
 func CheckSwitchCliModel(modelname string) bool {
-	if strings.HasPrefix(modelname, "EH7") || strings.HasPrefix(modelname, "EHG7") {
-		q.Q(modelname)
-		return true
+
+	cliSupportList := []string{
+		"EHG7",
+		"EHG9",
+		"EMG8",
+		"RHG9",
+		"RHG7",
+		"EH7",
+		"Simu",
 	}
+	// check modelname start with cliSupportList,
+	for _, v := range cliSupportList {
+		// convert v and modelname to lower case
+		mo := strings.ToLower(modelname)
+		vv := strings.ToLower(v)
+		if strings.HasPrefix(mo, vv) {
+			q.Q(modelname)
+			return true
+		}
+
+	}
+	// if strings.HasPrefix(modelname, "EH7") || strings.HasPrefix(modelname, "EHG7") {
+	// 	q.Q(modelname)
+	// 	return true
+	// }
 	q.Q("switch cli not supported", modelname)
 	return false
 }
 
+func ConvertSwitchCmd(modelname string, cmd []string) []string {
+	if strings.Contains(modelname, "EHG") {
+		return cmd
+	}
+	//judge wether is "no"
+	var snmp string
+	switch cmd[0] {
+	case "no":
+		if len(cmd) >= 2 {
+			snmp = cmd[1]
+		}
+	default:
+		snmp = cmd[0]
+	}
+
+	switch snmp {
+	case "snmp":
+		cmd := deleteExtraSnmpCmd(cmd)
+		return cmd
+	}
+	return cmd
+}
+
+func deleteExtraSnmpCmd(cmd []string) []string {
+	rcmd := []string{}
+	for _, v := range cmd {
+		if v != "enable" {
+			rcmd = append(rcmd, v)
+		}
+	}
+	return rcmd
+}
+
+// Use target device CLI configuration commands.
+//
+// Usage : switch [mac address] [username] [password] [cli cmd...]
+//
+//	[mac address] : target device mac address
+//	[username]    : target device login user name
+//	[password]    : target device login passwaord
+//	[cli cmd...]  : target device cli command
+//
+// Example :
+//
+//	switch AA-BB-CC-DD-EE-FF admin default show ip
 func SwitchCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -375,6 +586,7 @@ func SwitchCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	devId := ws[1]
 	dev, err := FindDev(devId)
+	cmdinfo.DevId = devId
 	if err != nil {
 		cmdinfo.Status = "pending: device not found"
 		return cmdinfo
@@ -387,12 +599,13 @@ func SwitchCmd(cmdinfo *CmdInfo) *CmdInfo {
 		cmdinfo.Status = "error: switch cli not available"
 		return cmdinfo
 	}
+	wcmd := ConvertSwitchCmd(dev.ModelName, ws[4:])
+
 	username := ws[2]
 	password := ws[3]
-
-	err = SendSwitch(cmdinfo, dev, username, password, strings.Join(ws[4:], " "))
+	err = SendSwitch(cmdinfo, dev, username, password, strings.Join(wcmd, " "))
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
@@ -456,6 +669,40 @@ func SendSwitch(cmdinfo *CmdInfo, dev *DevInfo, username, password, cmd string) 
 	sendln(t, "blah blah\n") //XXX terrible hack
 	result, err := t.ReadBytes('%')
 	if err != nil {
+		fmt.Println(err)
+		q.Q(err)
+	}
+
+	cmdinfo.Result = string(result)
+
+	return nil
+}
+
+func SendSwitchWithoutConfig(cmdinfo *CmdInfo, dev *DevInfo, username, password, cmd string) error {
+	t, err := telnet.Dial("tcp", dev.IPAddress+":23")
+
+	if err != nil {
+		q.Q(err)
+		return err
+	}
+
+	defer func() {
+		if err := t.Close(); err != nil {
+			q.Q(err)
+		}
+	}()
+
+	t.SetUnixWriteMode(true)
+
+	expect(t, "sername: ")
+	sendln(t, username+"\n")
+	expect(t, "assword: ")
+	sendln(t, password+"\n")
+	expect(t, "#")
+	sendln(t, cmd+"\n")
+	sendln(t, "blah blah\n") //XXX terrible hack
+	result, err := t.ReadBytes('%')
+	if err != nil {
 		q.Q(err)
 	}
 	cmdinfo.Result = string(result)
@@ -463,6 +710,70 @@ func SendSwitch(cmdinfo *CmdInfo, dev *DevInfo, username, password, cmd string) 
 	return nil
 }
 
+// save config to device.
+//
+// Usage :config switch save [mac address] [username] [password]
+//
+//	[mac address] : target device mac address
+//	[username]    : target device login user name
+//	[password]    : target device login passwaord
+//
+// Example :
+//
+func ConfigSwitchSaveCmd(cmdinfo *CmdInfo) *CmdInfo {
+	cmd := cmdinfo.Command
+	ws := strings.Split(cmd, " ")
+	if len(ws) < 6 {
+		q.Q("error", len(ws))
+		cmdinfo.Status = "error: invalid command"
+		return cmdinfo
+	}
+	devId := ws[3]
+	dev, err := FindDev(devId)
+	cmdinfo.DevId = devId
+	if err != nil {
+		cmdinfo.Status = "pending: device not found"
+		return cmdinfo
+	}
+	if dev.ModelName == "" {
+		cmdinfo.Status = "error: invalid device model"
+		return cmdinfo
+	}
+	if !CheckSwitchCliModel(dev.ModelName) {
+		cmdinfo.Status = "error: switch cli not available"
+		return cmdinfo
+	}
+	username := ws[4]
+	password := ws[5]
+	err = SwitchConfigSave(cmdinfo, dev, username, password)
+	if err != nil {
+		cmdinfo.Status = "error: " + err.Error()
+		return cmdinfo
+	}
+	cmdinfo.Status = "ok"
+	return cmdinfo
+}
+
+// SwitchConfigSave save config to device
+func SwitchConfigSave(cmdinfo *CmdInfo, dev *DevInfo, username, password string) error {
+	switch {
+	case strings.Contains(dev.ModelName, "EHG"):
+		return SendSwitchWithoutConfig(cmdinfo, dev, username, password, "copy running-config startup-config")
+	default:
+		return SendSwitch(cmdinfo, dev, username, password, "copy running-config startup-config")
+
+	}
+}
+
+// Use different protocol to scan all devices.
+//
+// Usage : scan [protocol]
+//
+//	[protocol]    : use gwd/snmp to scan all devices.
+//
+// Example :
+//
+//	scan gwd
 func ScanCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	if cmd == "scan gwd" {
@@ -489,146 +800,86 @@ func ScanCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
-func ValidateCommands() error {
-	q.Q("validate cmds")
-	for k, v := range QC.CmdData {
-		if v.Retries > 3 {
-			q.Q("cancel cmd", v)
-			v.Status = "cancelled: " + v.Status
-			QC.CmdData[k] = v
-		}
-	}
-	return nil
-}
-
-// mqtt pub {topic name} {messages}
-// mqtt sub {topic name} {timeout.Second}
+// Use mqtt to publish/subscribe/unsubscribe/list topic.
+//
+// Usage : mqtt [mqttcmd] [tcp address] [topic] [data...]
+//
+//		[mqttcmd]     : pub/sub/unsub/list
+//	                 list is show all subscribe topic
+//		[tcp address] : would pub/sub/unsub broker tcp address
+//		[topic]       : topic name
+//		[data...]     : data is messages, only publish use it.
+//
+// Example :
+//
+//	mqtt pub 192.168.12.1:1883 topictest "this is messages."
+//	mqtt sub 192.168.12.1:1883 topictest
+//	mqtt unsub 192.168.12.1:1883 topictest
+//	mqtt list
 func RunMqttCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
-	if len(ws) < 3 {
+	if len(ws) < 2 {
 		q.Q("error", len(ws))
 		cmdinfo.Status = "error: invalid command"
 		return cmdinfo
 	}
 	selectOption := ws[1]
-	topicname := ws[2]
-	data := strings.Join(ws[3:], " ")
+	if strings.HasPrefix(selectOption, "list") {
+		result := DisplayAllSubscribeTopic()
+		if result == "" {
+			result = "not subscribe topic"
+		}
+		cmdinfo.Result = result
+		cmdinfo.Status = "ok"
+		return cmdinfo
+	}
+	tcpaddr := ws[2]
+	checkIP := strings.Split(ws[2], ":")
+	// pass ":11883" local address
+	if checkIP[0] != "" {
+		err := CheckIPAddress(checkIP[0])
+		if err != nil {
+			cmdinfo.Status = "error: tcp address invalid"
+			return cmdinfo
+		}
+	}
+	topicname := ws[3]
+	data := strings.Join(ws[4:], " ")
 	if strings.HasPrefix(selectOption, "pub") {
-		err := RunMqttPublish(topicname, data)
+		if data == "" {
+			cmdinfo.Status = "error: invalid command"
+			return cmdinfo
+		}
+		err := RunMqttPublish(tcpaddr, topicname, data)
 		if err != nil {
 			q.Q(err)
-			cmdinfo.Status = err.Error()
+			cmdinfo.Status = "error: " + err.Error()
 			return cmdinfo
 		}
 		cmdinfo.Status = "ok"
 		return cmdinfo
 	}
 	if strings.HasPrefix(selectOption, "sub") {
-		v, _ := strconv.Atoi(data)
-		err := RunMqttSubscribe(topicname, v)
+		err := RunMqttSubscribe(tcpaddr, topicname)
 		if err != nil {
 			q.Q(err)
-			cmdinfo.Status = err.Error()
+			cmdinfo.Status = "error: " + err.Error()
+			return cmdinfo
+		}
+		cmdinfo.Status = "ok"
+		return cmdinfo
+	}
+	if strings.HasPrefix(selectOption, "unsub") {
+		err := RunMqttUnSubscribe(tcpaddr, topicname)
+		if err != nil {
+			q.Q(err)
+			cmdinfo.Status = "error: " + err.Error()
 			return cmdinfo
 		}
 		cmdinfo.Status = "ok"
 		return cmdinfo
 	}
 	cmdinfo.Status = "error: not command pub/sub"
-	return cmdinfo
-}
-
-func isRootCommand(cmd string) bool {
-	if strings.HasPrefix(cmd, "config crontab") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "devices save") {
-		return true
-	}
-
-	if strings.HasPrefix(cmd, "rsa") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "mnmsconfig") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "mqtt") {
-		return true
-	}
-
-	if strings.HasPrefix(cmd, "devices load") {
-		return true
-	}
-	if strings.HasPrefix(cmd, "devices files list") {
-
-		return true
-	}
-	return false
-}
-
-func CommandCmd(cmdinfo *CmdInfo) *CmdInfo {
-	cmd := cmdinfo.Command
-
-	if strings.HasPrefix(cmd, "command delete") {
-		return CommandDeleteCmd(cmdinfo)
-	}
-
-	if strings.HasPrefix(cmd, "command interval") {
-		return CommandIntervalCmd(cmdinfo)
-	}
-
-	cmdinfo.Status = "error: invalid command"
-	return cmdinfo
-}
-
-// CommandIntervalCmd set CheckCommand() interval in second(s), ex: command interval 10.
-// range 1-3600 seconds.
-func CommandIntervalCmd(cmdinfo *CmdInfo) *CmdInfo {
-	cmd := cmdinfo.Command
-
-	ws := strings.Split(cmd, " ")
-	if len(ws) != 3 {
-		q.Q("error", len(ws))
-		cmdinfo.Status = "error: invalid command"
-		return cmdinfo
-	}
-	interval, err := strconv.Atoi(ws[2])
-	if err != nil {
-		q.Q(err)
-		cmdinfo.Status = fmt.Sprintf("error: %v", err)
-		return cmdinfo
-	}
-	if interval < 1 || interval > 3600 {
-		cmdinfo.Status = "error: interval range 1-3600 seconds"
-		return cmdinfo
-	}
-	QC.CmdInterval = interval
-	cmdinfo.Result = fmt.Sprintf("set interval to %v seconds", interval)
-	cmdinfo.Status = "ok"
-	return cmdinfo
-}
-
-// CommandDeleteCmd delete command from queue, ex: command delete switch mac user pass show info.
-// Use "all delete command" to issue all clients.
-// Also "all delete command" can't be used with other "all" commands in the same time because the QC.Client stores one command at a time.
-func CommandDeleteCmd(cmdinfo *CmdInfo) *CmdInfo {
-	cmd := cmdinfo.Command
-	ws := strings.Split(cmd, " ")
-	// ex: command delete switch mac user pass show info
-	// ex: command delete beep mac ip
-	if len(ws) < 3 {
-		q.Q("error", len(ws))
-		cmdinfo.Status = "error: invalid command"
-		return cmdinfo
-	}
-	key := strings.Join(ws[2:], " ")
-	q.Q("delete cmd", key)
-	if _, ok := QC.CmdData[key]; !ok {
-		cmdinfo.Status = "error: not found command"
-		return cmdinfo
-	}
-	delete(QC.CmdData, key)
-	cmdinfo.Status = "ok"
 	return cmdinfo
 }

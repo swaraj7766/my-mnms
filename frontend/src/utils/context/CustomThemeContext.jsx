@@ -2,17 +2,31 @@ import React from "react";
 import { App, ConfigProvider, theme as antdTheme } from "antd";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import enUS from "antd/locale/en_US";
+import ProtectedApis from "../apis/protectedApis";
+import publicApis from "../apis/publicApis";
 
 const CustomThemeContext = React.createContext({
   toggleColorMode: () => {},
   changeThemeMode: () => {},
   mode: "light",
   changeThemeToken: () => {},
+  changeBaseURL: () => {},
+  changeWsURL: () => {},
   themeToken: {},
+  baseURL: "http://localhost:27182",
+  wsURL: "ws://localhost:27182",
 });
 
 export const CustomThemeContextProvider = ({ children }) => {
   const [mode, setMode] = useLocalStorage("nms-color-mode", "light");
+  const [baseURL, setBaseURL] = useLocalStorage(
+    "nms-base-URL",
+    "http://localhost:27182"
+  );
+  const [wsURL, setWsURL] = useLocalStorage(
+    "nms-ws-URL",
+    "ws://localhost:27182"
+  );
   const [themeToken, setThemeToken] = useLocalStorage("nms-theme-token", {
     colorPrimary: "#3B71CA",
     borderRadius: 4,
@@ -25,12 +39,22 @@ export const CustomThemeContextProvider = ({ children }) => {
         setMode((prevMode) => (prevMode === "light" ? "realDark" : "light"));
       },
       changeThemeMode: (value) => setMode(value),
+      changeBaseURL: (value) => {
+        setBaseURL(value);
+        publicApis.defaults.baseURL = value;
+        ProtectedApis.defaults.baseURL = value;
+      },
+      changeWsURL: (value) => {
+        setWsURL(value);
+      },
       changeThemeToken: (token) =>
         setThemeToken((prev) => ({ ...prev, ...token })),
       mode,
       themeToken,
+      baseURL,
+      wsURL,
     }),
-    [mode, themeToken] // eslint-disable-line react-hooks/exhaustive-deps
+    [mode, themeToken, baseURL, wsURL] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const theme = React.useMemo(

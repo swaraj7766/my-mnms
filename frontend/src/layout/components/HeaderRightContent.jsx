@@ -3,8 +3,8 @@ import { Avatar, Dropdown, Space, Typography } from "antd";
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import { useDispatch } from "react-redux";
-import ColorSwatch from "./ColorSwatch";
 import { logoutUser } from "../../features/auth/userAuthSlice";
+import SettingsComp from "../../components/SettingsComp";
 
 const { Text } = Typography;
 
@@ -23,8 +23,15 @@ const HeaderRightContent = () => {
     if (e.key === "logout") {
       sessionStorage.removeItem("nmstoken");
       sessionStorage.removeItem("nmsuser");
+      sessionStorage.removeItem("nmsuserrole");
+      sessionStorage.removeItem("prevTopologyNodesData");
+      sessionStorage.removeItem("qrcodeurl");
+      sessionStorage.removeItem("sessionid");
+      sessionStorage.removeItem("is2faenabled");
       dispatch(logoutUser());
       navigate("/login");
+    }
+    if (e.key === "about") {
     }
   };
 
@@ -34,10 +41,7 @@ const HeaderRightContent = () => {
 
   return (
     <Space size={16}>
-      <ColorSwatch />
-      {/* <Badge count={11} showZero style={{ color: "#ffffff" }} size="small">
-        <Button type="primary" shape="circle" icon={<BellOutlined />} />
-      </Badge> */}
+      <SettingsComp />
       <Dropdown
         menu={{ items, onClick: handleMenuClick }}
         trigger={["click"]}

@@ -4,7 +4,6 @@
 package net
 
 import (
-	"log"
 	"net"
 
 	"github.com/vishvananda/netlink"
@@ -16,7 +15,7 @@ import (
 func AddIPAddress(netname string, prefixip string) error {
 	adapter, err := GetAdaptersAddresses(netname)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	ip, ipnet, err := net.ParseCIDR(prefixip)
 	if err != nil {

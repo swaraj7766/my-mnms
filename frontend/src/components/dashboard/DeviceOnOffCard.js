@@ -54,7 +54,7 @@ const DeviceOnOffCard = () => {
       let onlineCount = 0;
       let offlineCount = 0;
       deviceData.forEach((item) => {
-        if (item.arpmissed > 1) offlineCount++;
+        if (item.timeDiff > 90) offlineCount++;
         else onlineCount++;
       });
       setDeviceOnOffCount({

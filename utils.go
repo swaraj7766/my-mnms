@@ -2,7 +2,6 @@ package mnms
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -29,7 +28,7 @@ func SetupFakeClient() error {
 
 	dat, err := os.ReadFile("testdata.json")
 	if err != nil {
-		q.Q("can't read file %v", err)
+		q.Q("can't read file", err)
 		return err
 	}
 	var devinfo map[string]DevInfo
@@ -98,9 +97,10 @@ func IsAdminUser() bool {
 
 func DoExit(code int) {
 	q.Q("exiting mnms", code)
-	fmt.Fprintf(os.Stderr, "exiting mnms with code %v, not crashing but intentionally dumping stacktraces for information\n", code)
-	buf := make([]byte, 1<<16)
-	stackSize := runtime.Stack(buf, true)
-	fmt.Fprintf(os.Stderr, string(buf[0:stackSize]))
+	if QC.DumpStackTrace && code != 0 {
+		buf := make([]byte, 1<<16)
+		stackSize := runtime.Stack(buf, true)
+		q.Q(string(buf[0:stackSize]))
+	}
 	os.Exit(code)
 }

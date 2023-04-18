@@ -2,7 +2,6 @@ package net
 
 import (
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"strconv"
@@ -89,10 +88,10 @@ func GetInterFace(name string) (*net.Interface, error) {
 }
 */
 //GetAllInterface get  all of Interface and name
-func GetAllInterface() ([]net.Interface, string) {
+func GetAllInterface() ([]net.Interface, string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Fatal(err)
+		return []net.Interface{}, "", err
 	}
 	var ifs []net.Interface
 	var summary string
@@ -104,7 +103,7 @@ func GetAllInterface() ([]net.Interface, string) {
 		}
 	}
 
-	return ifs, summary
+	return ifs, summary, nil
 }
 
 // GetDefaultInterfaceName get defualt gateway name

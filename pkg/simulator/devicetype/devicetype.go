@@ -3,7 +3,6 @@ package devicetype
 import (
 	"errors"
 	"fmt"
-	"log"
 	"math/rand"
 	"strings"
 	"time"
@@ -95,7 +94,6 @@ func GetModelAp(name Simulator_type) (string, string) {
 	if name.IsValid() {
 		return fmt.Sprintf("Simu%v%v", split, name), fmt.Sprintf("Simu%v_atop device", name)
 	} else {
-		log.Fatalf("Simulator_type:%v error", name)
 		return "", "'"
 	}
 }

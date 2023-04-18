@@ -7,22 +7,16 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	g "github.com/gosnmp/gosnmp"
 	"github.com/qeof/q"
-	"github.com/sirupsen/logrus"
 )
 
-const (
-	START = 1
-	STOP  = 2
-	END   = 3
-)
-
-var ch = make(chan int, 1)
-
+type ChassisDetails struct {
+	ChassisId  string `json:"chassis_id"`
+	MacAddress string `json:"mac_address"`
+}
 type Link struct {
 	Source      string `json:"source"`
 	Target      string `json:"target"`
@@ -33,10 +27,19 @@ type Link struct {
 	BlockedPort bool   `json:"blockedPort"`
 }
 
+func (l Link) Equal(other Link) bool {
+	return l.Source == other.Source && l.Target == other.Target && l.SourcePort == other.SourcePort && l.TargetPort == other.TargetPort
+}
+
 type Node struct {
 	Id         string `json:"id"`
 	IpAddress  string `json:"ipAddress"`
 	MacAddress string `json:"macAddress"`
+	ModelName  string `json:"modelname"`
+}
+
+func (n Node) Equal(other Node) bool {
+	return n.Id == other.Id && n.IpAddress == other.IpAddress && n.MacAddress == other.MacAddress && n.ModelName == other.ModelName
 }
 
 type Topology struct {
@@ -44,162 +47,276 @@ type Topology struct {
 	NodeData []Node `json:"node_data"`
 }
 
-type (
-	Links = []Link
-	Nodes = []Node
+func (t Topology) Equal(other Topology) bool {
+	if len(t.LinkData) != len(other.LinkData) || len(t.NodeData) != len(other.NodeData) {
+		return false
+	}
+	for _, link := range t.LinkData {
+		found := false
+		for _, otherLink := range other.LinkData {
+			if link.Equal(otherLink) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, node := range t.NodeData {
+		found := false
+		for _, otherNode := range other.NodeData {
+			if node.Equal(otherNode) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+type TopoDevice struct {
+	IpAddress  string `json:"ip_address"`
+	MacAddress string `json:"mac_address"`
+	ModelName  string `json:"modelname"`
+}
+
+var (
+	ChassisIdList map[string]string
+	templldpData  []Link
 )
 
 func TopologyPollingWithTimer(pollingInterval int) {
 	pollingTimer := time.NewTicker(time.Second * time.Duration(pollingInterval))
-	start := true
 	for range pollingTimer.C {
-		select {
-		case op := <-ch:
-			if op == START {
-				start = true
-			} else if op == STOP {
-				start = false
-			} else if op == END {
-				return
+		ChassisIdList = make(map[string]string)
+		templldpData = []Link{}
+		targetes := []TopoDevice{}
+		QC.DevMutex.Lock()
+		currDevs := QC.DevData
+		QC.DevMutex.Unlock()
+		for _, dev := range currDevs {
+			currTime := time.Now().Unix()
+			lastTime, err := strconv.ParseInt(dev.Timestamp, 10, 64)
+			if err != nil {
+				q.Q("error in parsing timestamp")
+				continue
 			}
-		default:
-			// fetch data here
-			if start {
-				q.Q("Get Topology data and send through web socket")
-				targetes := []string{}
-				for _, dev := range QC.DevData {
-					targetes = append(targetes, dev.IPAddress)
-				}
-				LldpScan(targetes)
+			if currTime-lastTime <= int64(QC.GwdInterval) {
+				targetes = append(targetes, TopoDevice{IpAddress: dev.IPAddress, MacAddress: dev.Mac, ModelName: dev.ModelName})
 			}
+		}
+		UpdateChassisIdList(targetes)
+		UpdateRealTopologyData(targetes)
+		CreateAndPublishTopologyData(targetes)
+	}
+}
+
+func UpdateChassisIdList(devdata []TopoDevice) {
+	for _, device := range devdata {
+		result, err := GetChassisId(device.IpAddress, device.MacAddress)
+		if err != nil {
+			q.Q("chesis id not found")
+		}
+		if len(result.ChassisId) > 0 {
+			ChassisIdList[result.ChassisId] = result.MacAddress
+		}
+
+	}
+}
+
+func UpdateRealTopologyData(devdata []TopoDevice) {
+	for _, device := range devdata {
+		err := GetLLDPData(device.IpAddress, device.MacAddress, device.ModelName, ChassisIdList)
+		if err != nil {
+			q.Q("error message: ", err)
 		}
 	}
 }
 
-func RemoveIndex(s []Link, index int) []Link {
-	return append(s[:index], s[index+1:]...)
-}
-
-func LldpScan(targetes []string) {
-	// fmt.Println(targetes)
-	nodesData := Nodes{}
-	linksData := Links{}
-	var wg sync.WaitGroup
-	for _, ip := range targetes {
-		wg.Add(1)
-		go func(ip string) {
-			localChesIdResult := gatLocalChesisId(ip)
-			nodesData = append(nodesData, Node{Id: localChesIdResult, IpAddress: ip, MacAddress: localChesIdResult})
-
-			tempLinksData := getLldpData(ip, localChesIdResult)
-			for _, linkData := range tempLinksData {
-				isRealTopology := realTopologyData(linksData, linkData)
-				if isRealTopology {
-					linksData = append(linksData, linkData)
-				}
-				if linkData.BlockedPort && !isRealTopology {
-					for index, linkDataBport := range linksData {
-						if linkData.EdgeData == linkDataBport.EdgeData {
-							linksData = RemoveIndex(linksData, index)
-						}
-					}
-					linksData = append(linksData, linkData)
-				}
-
-				//
-			}
-			wg.Done()
-		}(ip)
+func CreateAndPublishTopologyData(devdata []TopoDevice) {
+	nodeData := []Node{}
+	linkData := []Link{}
+	inResult := make(map[string]bool)
+	for _, device := range devdata {
+		nodeData = append(nodeData, Node{Id: device.MacAddress, IpAddress: device.IpAddress, MacAddress: device.MacAddress, ModelName: device.ModelName})
 	}
-	wg.Wait()
+	// first add if blocaked port
+	for _, lldpData := range templldpData {
+		if lldpData.BlockedPort && !inResult[lldpData.EdgeData] {
+			inResult[lldpData.EdgeData] = true
+			linkData = append(linkData, lldpData)
+		}
+	}
+	// add all port filtered data
+	for _, lldpData := range templldpData {
+		if _, ok := inResult[lldpData.EdgeData]; !ok {
+			inResult[lldpData.EdgeData] = true
+			linkData = append(linkData, lldpData)
+		}
+	}
 	topologyData := Topology{}
-	topologyData.NodeData = nodesData
-	topologyData.LinkData = linksData
-	// res, err := PrettyStruct(topologyData)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// fmt.Println("topology Data:  ", res)
+	topologyData.NodeData = nodeData
+	topologyData.LinkData = linkData
 	_ = PublishTopology(topologyData)
-	// fmt.Printf("nodes Data %v \n", nodesData)
-	// res, err = PrettyStruct(linksData)
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// fmt.Println("links Data:  ", res)
-	return
 }
 
-func gatLocalChesisId(targetIp string) (localChesisId string) {
-	var localChesId string
+func GetChassisId(targetIp string, macaddress string) (chl ChassisDetails, err error) {
+	localChesId := ChassisDetails{}
 	oids := []string{"1.0.8802.1.1.2.1.3.2.0"}
-	result, err2 := GetOids(targetIp, oids, nil)
-	if err2 != nil {
-		q.Q("Get() err: ", err2)
+	result, err := GetOids(targetIp, oids, nil)
+	if err != nil {
+		return localChesId, err
 	}
 	for _, variable := range result {
 		switch variable.Type {
 		case g.OctetString:
-			localChesId = ToMacString(variable.Value)
+			localChesId = ChassisDetails{ChassisId: ToMacString(variable.Value), MacAddress: macaddress}
 		default:
-			q.Q("number: %d\n", g.ToBigInt(variable.Value))
+			return localChesId, fmt.Errorf("value type is not correct")
 		}
 	}
-	return localChesId
+	return localChesId, nil
 }
 
-func getLldpData(targetIp string, sourceChesId string) Links {
-	lldpRemChassisId := []g.SnmpPDU{}
-	lldpRemPortId := []g.SnmpPDU{}
-	erpsEnabled := []g.SnmpPDU{}
-	linkDataResult := []Link{}
+func GetLLDPData(ipaddress string, macaddress string, modelname string, chesisIdList map[string]string) error {
 	var blockedPort []string
-	sysObjectId := gatSystemObjectId(targetIp)
+	sysObjectId, err := GetSystemObjectId(ipaddress)
+	if err != nil {
+		return err
+	}
 	lldpRemChassisIdOid := "1.0.8802.1.1.2.1.4.1.1.5"
 	lldpRemPortIdOid := "1.0.8802.1.1.2.1.4.1.1.7"
 	erpsEnableOid := sysObjectId + ".4.4.1"
-	lldpRemChassisId = Bulk(targetIp, lldpRemChassisIdOid, nil)
-	lldpRemPortId = Bulk(targetIp, lldpRemPortIdOid, nil)
-	erpsEnabled = Bulk(targetIp, erpsEnableOid, nil)
-	if len(erpsEnabled) > 0 {
-		for _, pdus := range erpsEnabled {
-			if pdus.Value == 1 {
-				blockedPort = getErpsBlockedPort(sysObjectId, targetIp)
+	erpsRsapVlanOid := sysObjectId + ".4.4.3.1.1"
+	erpsDataOid := sysObjectId + ".4.4.3.1"
+	erpsWPortStatusOid := sysObjectId + ".4.4.3.1.4."
+	erpsEPortStatusOid := sysObjectId + ".4.4.3.1.5."
+	erpsWPortOid := sysObjectId + ".4.4.3.1.2."
+	erpsEPortOid := sysObjectId + ".4.4.3.1.3."
+	lldpRemChassisId, err := GetBulk(ipaddress, lldpRemChassisIdOid, nil)
+	if err != nil {
+		return err
+	}
+	lldpRemPortId, err := GetBulk(ipaddress, lldpRemPortIdOid, nil)
+	if err != nil {
+		return err
+	}
+	erpsEnable, err := GetBulk(ipaddress, erpsEnableOid, nil)
+	if err != nil {
+		return err
+	}
+	erpsVlanId, err := GetBulk(ipaddress, erpsRsapVlanOid, nil)
+	if err != nil {
+		return err
+	}
+	erpsDataall, err := GetBulk(ipaddress, erpsDataOid, nil)
+	if err != nil {
+		return err
+	}
+	for _, element := range erpsEnable {
+		if element.Value == 1 && len(erpsVlanId) > 0 && len(erpsDataall) > 0 {
+			for _, vlanElement := range erpsVlanId {
+				vlanId := fmt.Sprint(vlanElement.Value)
+				var eastPort string
+				var westPort string
+				for _, erpsDataElement := range erpsDataall {
+					if erpsDataElement.Name == erpsWPortOid+vlanId {
+						westPort = fmt.Sprintf("port%v", string(erpsDataElement.Value.([]byte)))
+					}
+					if erpsDataElement.Name == erpsEPortOid+vlanId {
+						eastPort = fmt.Sprintf("port%v", string(erpsDataElement.Value.([]byte)))
+					}
+					if erpsDataElement.Name == erpsWPortStatusOid+vlanId && erpsDataElement.Value == 2 {
+						blockedPort = append(blockedPort, westPort)
+					}
+					if erpsDataElement.Name == erpsEPortStatusOid+vlanId && erpsDataElement.Value == 2 {
+						blockedPort = append(blockedPort, eastPort)
+					}
+				}
 			}
 		}
 	}
-	if len(lldpRemChassisId) == len(lldpRemPortId) {
-		for index, pdus := range lldpRemChassisId {
-			linkData, _ := createLldp(pdus, lldpRemPortId[index], sourceChesId, blockedPort)
-			linkDataResult = append(linkDataResult, linkData)
-		}
-	}
 
-	return linkDataResult
+	QC.DevMutex.Lock()
+	currDevs := QC.DevData
+	QC.DevMutex.Unlock()
+	for index, element := range lldpRemPortId {
+		remotePortValue := string(element.Value.([]byte))
+		if len(remotePortValue) != 8 && !strings.HasPrefix(remotePortValue, "port") {
+			return fmt.Errorf("remote port is not correct")
+		}
+		sourcePortName := "port" + getLocalPort((strings.Replace(element.Name, lldpRemPortIdOid, "", -1)))
+		intVar, _ := strconv.Atoi(remotePortValue[5:])
+		remotePortName := "port" + strconv.Itoa(intVar)
+		if len(lldpRemChassisId) != len(lldpRemPortId) {
+			return fmt.Errorf("remote chassis length and remote port length diffrent")
+		}
+		remoteChesisId := ToMacString(lldpRemChassisId[index].Value)
+		if len(remoteChesisId) == 0 {
+			return fmt.Errorf("remote mac is empty")
+		}
+		found := false
+		for _, dev := range currDevs {
+			if dev.Mac == remoteChesisId {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("remote mac is not found")
+		}
+		remoteMacAddress := remoteChesisId
+		sourceMacaddress := macaddress
+		var edgeData string
+		if sourceMacaddress < remoteMacAddress {
+			edgeData = sourceMacaddress + "_" + remoteMacAddress
+		} else {
+			edgeData = remoteMacAddress + "_" + sourceMacaddress
+		}
+		isSourcePortBlocked := isSourcePortBlocked(sourcePortName, blockedPort)
+		templldpData = append(templldpData, Link{
+			Source:      sourceMacaddress,
+			Target:      remoteMacAddress,
+			SourcePort:  sourcePortName,
+			TargetPort:  remotePortName,
+			EdgeData:    edgeData,
+			BlockedPort: isSourcePortBlocked,
+			LinkFlow:    true,
+		})
+	}
+	return nil
 }
 
-func createLldp(pdu g.SnmpPDU, ppdu g.SnmpPDU, sourceChesId string, blockedPort []string) (Link, error) {
-	linkData := Link{}
-	remotePortValue := string(ppdu.Value.([]byte))
-	if len(remotePortValue) != 8 {
-		return linkData, nil
+func GetSystemObjectId(targetIp string) (sysObjectId string, err error) {
+	var systemObjectId string
+	oids := []string{"1.3.6.1.2.1.1.2.0"}
+	result, err := GetOids(targetIp, oids, nil)
+	if err != nil {
+		return systemObjectId, err
 	}
-	intVar, _ := strconv.Atoi(remotePortValue[5:])
-
-	sourcePortvalue := "port" + getLocalPort((strings.Replace(ppdu.Name, "1.0.8802.1.1.2.1.4.1.1.7", "", -1)))
-	b := ToMacString(pdu.Value)
-	isBlockedPort := isSourcePortBlocked(sourcePortvalue, blockedPort)
-
-	var edgeData string
-	if sourceChesId < string(b) {
-		edgeData = sourceChesId + "_" + string(b)
-	} else {
-		edgeData = string(b) + "_" + sourceChesId
+	for _, variable := range result {
+		switch variable.Type {
+		case g.ObjectIdentifier:
+			systemObjectId = fmt.Sprint(variable.Value)
+		default:
+			return systemObjectId, fmt.Errorf("value type is not correct")
+		}
 	}
+	return systemObjectId, nil
+}
 
-	linkData = Link{Source: sourceChesId, Target: string(b), SourcePort: sourcePortvalue, TargetPort: "port" + strconv.Itoa(intVar), EdgeData: edgeData, LinkFlow: !isBlockedPort, BlockedPort: isBlockedPort}
-
-	return linkData, nil
+func isSourcePortBlocked(sourcePort string, blockedPort []string) bool {
+	isblockedPort := false
+	for _, port := range blockedPort {
+		if port == sourcePort {
+			isblockedPort = true
+		}
+	}
+	return isblockedPort
 }
 
 func ToMacString(value interface{}) string {
@@ -219,18 +336,10 @@ func insertdash(s string) string {
 	for i, rune := range upper {
 		buffer.WriteRune(rune)
 		if i%2 == n_1 && i != l_1 {
-			buffer.WriteRune(':')
+			buffer.WriteRune('-')
 		}
 	}
 	return buffer.String()
-}
-
-func PrettyStruct(data interface{}) (string, error) {
-	val, err := json.MarshalIndent(data, "", "    ")
-	if err != nil {
-		return "", err
-	}
-	return string(val), nil
 }
 
 func getLocalPort(s string) string {
@@ -238,79 +347,9 @@ func getLocalPort(s string) string {
 	return splitValue
 }
 
-func realTopologyData(arrayLink []Link, inputLink Link) bool {
-	linkDataResult := true
-
-	for _, linkData := range arrayLink {
-		if linkData.EdgeData == inputLink.EdgeData {
-			linkDataResult = false
-		}
-	}
-	return linkDataResult
-}
-
-func gatSystemObjectId(targetIp string) (sysObjectId string) {
-	var systemObjectId string
-	oids := []string{"1.3.6.1.2.1.1.2.0"}
-	result, err2 := GetOids(targetIp, oids, nil)
-	if err2 != nil {
-		q.Q("Get() err: ", err2)
-	}
-	for _, variable := range result {
-		switch variable.Type {
-		case g.ObjectIdentifier:
-			t, ok := variable.Value.(string)
-			if ok {
-				systemObjectId = t
-			}
-
-		default:
-		}
-	}
-	return systemObjectId
-}
-
-func getErpsBlockedPort(systemObjectId string, targetIp string) []string {
-	var erpsVlanId int
-	var blockedPort []string
-	erpsRsapVlanOid := systemObjectId + ".4.4.3.1.1"
-	erpsDataOid := systemObjectId + ".4.4.3.1"
-	erpsWPortStatusOid := systemObjectId + ".4.4.3.1.4."
-	erpsEPortStatusOid := systemObjectId + ".4.4.3.1.5."
-	erpsVlanPdus := []g.SnmpPDU{}
-	erpsData := []g.SnmpPDU{}
-	erpsVlanPdus = Bulk(targetIp, erpsRsapVlanOid, nil)
-	erpsData = Bulk(targetIp, erpsDataOid, nil)
-	if len(erpsVlanPdus) > 0 {
-		erpsVlanId = int(erpsVlanPdus[0].Value.(int))
-	}
-	if len(erpsData) > 0 {
-		for _, pdus := range erpsData {
-			if pdus.Name == erpsWPortStatusOid+strconv.Itoa(erpsVlanId) && int(pdus.Value.(int)) == 2 {
-				blockedPort = append(blockedPort, "port"+string(erpsData[1].Value.([]byte)))
-			}
-			if pdus.Name == erpsEPortStatusOid+strconv.Itoa(erpsVlanId) && int(pdus.Value.(int)) == 2 {
-				blockedPort = append(blockedPort, "port"+string(erpsData[2].Value.([]byte)))
-			}
-		}
-	}
-	return blockedPort
-}
-
-func isSourcePortBlocked(sourcePort string, blockedPort []string) bool {
-	isblockedPort := false
-	for _, port := range blockedPort {
-		if port == sourcePort {
-			isblockedPort = true
-			q.Q("enter in to check blocked port")
-		}
-	}
-	return isblockedPort
-}
-
 func PublishTopology(topologyData Topology) error {
 	// send all devices info to root
-	if QC.Root == "" {
+	if QC.RootURL == "" {
 		return fmt.Errorf("skip publishing devices, no root")
 	}
 
@@ -324,95 +363,121 @@ func PublishTopology(topologyData Topology) error {
 		q.Q(err)
 		return err
 	}
-	resp, err := PostWithToken(QC.Root+"/api/v1/topology", QC.AdminToken, bytes.NewBuffer(jsonBytes))
+	resp, err := PostWithToken(QC.RootURL+"/api/v1/topology", QC.AdminToken, bytes.NewBuffer(jsonBytes))
 	if err != nil {
-		q.Q(err, QC.Root)
+		q.Q(err, QC.RootURL)
 	}
 	if resp != nil {
 		res := make(map[string]interface{})
 		_ = json.NewDecoder(resp.Body).Decode(&res)
-		q.Q(res)
+		// q.Q(res)
+		// save close here
+		defer resp.Body.Close()
 	}
 	return nil
 }
 
 func InsertTopology(topoKeys string, topoDesc Topology) bool {
-	// insert a topology into the topology list
 	QC.DevMutex.Lock()
-	QC.TopologyData[topoKeys] = topoDesc
+	_, ok := QC.TopologyData[topoKeys]
+	if ok {
+		if !topoDesc.Equal(QC.TopologyData[topoKeys]) {
+			QC.TopologyData[topoKeys] = topoDesc
+			// topologies vary all the time due to snmp polling, so we don't send syslog here
+		}
+	} else {
+		QC.TopologyData[topoKeys] = topoDesc
+		err := SendSyslog(LOG_ALERT, "InsertTopo", "new topology from: "+topoKeys)
+		if err != nil {
+			q.Q(err)
+		}
+	}
 	QC.DevMutex.Unlock()
 
 	return true
 }
 
-type SnmpOption struct {
-	Port      uint16
-	Community string
-	Version   g.SnmpVersion
-	Timeout   time.Duration
-	Retries   int
-}
-
-var DefaultSnmpOption = SnmpOption{
+var DefaultSnmpOption = SnmpOptions{
 	Port:      161,
 	Community: "public",
 	Version:   g.Version2c,
 	Timeout:   time.Second,
-	Retries:   1,
 }
 
-func GetOids(target string, oids []string, opt *SnmpOption) (results []g.SnmpPDU, err error) {
+func GetOids(target string, oids []string, opt *SnmpOptions) (results []g.SnmpPDU, err error) {
+	var community string
 	if opt == nil {
 		opt = &DefaultSnmpOption
+		devInfo, err := FindDevWithIP(target)
+		community = opt.Community
+		if err == nil {
+
+			if len(devInfo.ReadCommunity) > 0 {
+				community = devInfo.ReadCommunity
+			}
+		}
+
 	}
 
 	client := g.GoSNMP{
-		Target:    target,
-		Community: opt.Community,
-		Port:      opt.Port,
-		Version:   opt.Version,
-		Timeout:   opt.Timeout,
+		Target:                  target,
+		Community:               community,
+		Port:                    opt.Port,
+		Version:                 opt.Version,
+		Timeout:                 opt.Timeout,
+		Retries:                 1,
+		UseUnconnectedUDPSocket: true,
 	}
 
 	err = client.Connect()
 	if err != nil {
-		logrus.Errorf("Connect() err: %v", err)
-		return
+		return []g.SnmpPDU{}, err
 	}
 	defer client.Conn.Close()
 	pkt, err := client.Get(oids)
 	if err != nil {
-		return
+		return []g.SnmpPDU{}, err
 	}
-	return pkt.Variables, err
+	return pkt.Variables, nil
 }
 
-// Bulk get same type below oid
-func Bulk(target string, oid string, opt *SnmpOption) []g.SnmpPDU {
-	results := []g.SnmpPDU{}
+func GetBulk(target string, oid string, opt *SnmpOptions) (results []g.SnmpPDU, errs error) {
+	snmpResults := []g.SnmpPDU{}
+	var community string
 	if opt == nil {
 		opt = &DefaultSnmpOption
+		devInfo, err := FindDevWithIP(target)
+		community = opt.Community
+		if err == nil {
+
+			if len(devInfo.ReadCommunity) > 0 {
+				community = devInfo.ReadCommunity
+			}
+		}
+
 	}
+
 	client := g.GoSNMP{
-		Target:    target,
-		Community: opt.Community,
-		Port:      opt.Port,
-		Version:   opt.Version,
-		Timeout:   opt.Timeout,
+		Target:                  target,
+		Community:               community,
+		Port:                    opt.Port,
+		Version:                 opt.Version,
+		Timeout:                 opt.Timeout,
+		Retries:                 1,
+		UseUnconnectedUDPSocket: true,
 	}
 
 	err := client.Connect()
 	if err != nil {
-		logrus.Errorf("Connect() err: %v", err)
-		return results
+		return snmpResults, err
 	}
 	defer client.Conn.Close()
 	err = client.BulkWalk(oid, func(pdu g.SnmpPDU) error {
-		results = append(results, pdu)
+		snmpResults = append(snmpResults, pdu)
 		return nil
 	})
 	if err != nil {
-		return results
+		return snmpResults, err
 	}
-	return results
+	return snmpResults, nil
 }

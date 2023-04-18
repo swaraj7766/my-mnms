@@ -1,14 +1,4 @@
-import {
-  Button,
-  ConfigProvider,
-  Form,
-  InputNumber,
-  theme as antdTheme,
-  DatePicker,
-  Row,
-  Col,
-  Card,
-} from "antd";
+import { ConfigProvider, theme as antdTheme, Row, Col } from "antd";
 import React, { useEffect, useState } from "react";
 import dayjs from "dayjs";
 import { useDispatch, useSelector } from "react-redux";
@@ -19,127 +9,94 @@ import {
 } from "../../features/eventLog/eventLogSlice";
 import ExportData from "../../components/exportData/ExportData";
 
-const { RangePicker } = DatePicker;
-const dateFormat = "YYYY/MM/DD HH:mm:ss";
-
-let now = dayjs();
-
 const columns = [
   {
     title: "Timestamp",
     dataIndex: "Timestamp",
     key: "Timestamp",
-    width: 150,
-    render: (data) => dayjs(data).format("YYYY/MM/DD HH:mm:ss"),
+    width: 250,
+    render: (data) => {
+      // RFC3339 format dayjs will judge wrong
+      const tmp = data.replace('Z','');
+      return dayjs(tmp).format("YYYY/MM/DD HH:mm:ss");
+    },
+    sorter: (a, b) => (a.Timestamp > b.Timestamp ? 1 : -1),
   },
   {
     title: "Hostname",
     dataIndex: "Hostname",
     key: "Hostname",
-    width: 100,
+    width: 150,
+    sorter: (a, b) => (a.Hostname > b.Hostname ? 1 : -1),
   },
   {
     title: "Facility",
     width: 100,
     dataIndex: "Facility",
     key: "Facility",
+    sorter: (a, b) => (a.Hostname > b.Hostname ? 1 : -1),
   },
   {
     title: "Severity",
     dataIndex: "Severity",
     key: "Severity",
     width: 100,
+    sorter: (a, b) => (a.Severity > b.Severity ? 1 : -1),
   },
   {
     title: "Priority",
     dataIndex: "Priority",
     key: "Priority",
     width: 100,
+    sorter: (a, b) => (a.Priority > b.Priority ? 1 : -1),
   },
   {
     title: "Appname",
     dataIndex: "Appname",
     key: "Appname",
     width: 100,
+    sorter: (a, b) => (a.Appname > b.Appname ? 1 : -1),
   },
   {
     title: "Message",
     dataIndex: "Message",
     key: "Message",
-    width: 250,
+    width: 350,
   },
 ];
 
 const EventLogs = () => {
   const { token } = antdTheme.useToken();
   const { eventLogData, fetching } = useSelector(eventLogSelector);
-  const [recordNo, setRecordNo] = useState(20);
-  const [filterDateRange, setFilterDateRange] = useState([
-    dayjs().subtract(6, "day").format("YYYY/MM/DD HH:mm:ss"),
-    dayjs().format("YYYY/MM/DD HH:mm:ss"),
-  ]);
+  const [inputSearch, setInputSearch] = useState("");
 
-  const onDateChange = (value, dateString) => {
-    setFilterDateRange(dateString);
-  };
-
-  const handleFilterClick = () => {
+  const handleRefreshClick = () => {
     dispatch(
       RequestEventlog({
-        start: filterDateRange[0],
-        end: filterDateRange[1],
-        number: recordNo,
+        number: 100,
       })
     );
+  };
+  const recordAfterfiltering = (dataSource) => {
+    return dataSource.filter((row) => {
+      let rec = columns.map((element) => {
+        return row[element.dataIndex]?.toString().includes(inputSearch);
+      });
+      return rec.includes(true);
+    });
   };
 
   const dispatch = useDispatch();
   useEffect(() => {
     dispatch(
       RequestEventlog({
-        start: filterDateRange[0],
-        end: filterDateRange[1],
-        number: recordNo,
+        number: 100,
       })
     );
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <Row gutter={[16, 16]}>
-      <Col span={24}>
-        <Card bordered={false}>
-          <Form layout="vertical">
-            <Row gutter={{ xs: 8, sm: 16, md: 24, lg: 32 }} align="middle">
-              <Col xs={24} sm={12} lg={6}>
-                <Form.Item label="No. of records">
-                  <InputNumber
-                    value={recordNo}
-                    onChange={(e) => dispatch(setRecordNo(e.target.value))}
-                    style={{ width: "100%" }}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Form.Item label="Select date range">
-                  <RangePicker
-                    showTime
-                    value={[
-                      dayjs(filterDateRange[0], dateFormat),
-                      dayjs(filterDateRange[1], dateFormat),
-                    ]}
-                    format={dateFormat}
-                    onChange={onDateChange}
-                  />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Button type="primary" onClick={() => handleFilterClick()}>
-                  filter
-                </Button>
-              </Col>
-            </Row>
-          </Form>
-        </Card>
-      </Col>
       <Col span={24}>
         <ConfigProvider
           theme={{
@@ -159,12 +116,12 @@ const EventLogs = () => {
             loading={fetching}
             headerTitle="Log List"
             columns={columns}
-            dataSource={eventLogData}
+            dataSource={recordAfterfiltering(eventLogData)}
             pagination={{
               position: ["bottomCenter"],
               showQuickJumper: true,
               size: "default",
-              total: eventLogData.length,
+              total: recordAfterfiltering(eventLogData).length,
               defaultPageSize: 10,
               pageSizeOptions: [10, 15, 20, 25],
               showTotal: (total, range) =>
@@ -174,16 +131,23 @@ const EventLogs = () => {
               x: 1100,
             }}
             toolbar={{
+              search: {
+                onSearch: (value) => {
+                  setInputSearch(value);
+                },
+              },
               actions: [
                 <ExportData
                   Columns={columns}
                   DataSource={eventLogData}
-                  title="Syslog List"
+                  title="Syslog_List"
                 />,
               ],
             }}
             options={{
-              reload: false,
+              reload: () => {
+                handleRefreshClick();
+              },
               fullScreen: false,
             }}
             search={false}

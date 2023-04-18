@@ -50,12 +50,20 @@ const debugPageSlice = createSlice({
     debugCmdStatus: "in_progress",
     errorDebugCmd: "",
     cmdResponse: [],
+    refreshDebugCommandResult: false,
+    inputCommand: "",
   },
   reducers: {
     clearDebugCmdData: (state) => {
       state.debugCmdStatus = "in_progress";
       state.errorDebugCmd = "";
-      state.cmdResponse = [];
+    },
+
+    refreshDebugResult: (state, { payload }) => {
+      state.refreshDebugCommandResult = payload;
+    },
+    inputCommandChange: (state, { payload }) => {
+      state.inputCommand = payload;
     },
   },
   extraReducers: (builder) => {
@@ -73,16 +81,30 @@ const debugPageSlice = createSlice({
       .addCase(RequestDebugCommand.rejected, (state, { payload }) => {
         state.debugCmdStatus = "failed";
         state.errorDebugCmd = payload;
+        alert(state.errorDebugCmd);
         state.cmdResponse = [];
       });
   },
 });
 
-export const { clearDebugCmdData } = debugPageSlice.actions;
+export const { clearDebugCmdData, refreshDebugResult, inputCommandChange } =
+  debugPageSlice.actions;
 
 export const debugCmdSelector = (state) => {
-  const { debugCmdStatus, errorDebugCmd, cmdResponse } = state.debugCmd;
-  return { debugCmdStatus, errorDebugCmd, cmdResponse };
+  const {
+    debugCmdStatus,
+    errorDebugCmd,
+    cmdResponse,
+    refreshDebugCommandResult,
+    inputCommand,
+  } = state.debugCmd;
+  return {
+    debugCmdStatus,
+    errorDebugCmd,
+    cmdResponse,
+    refreshDebugCommandResult,
+    inputCommand,
+  };
 };
 
 export default debugPageSlice;

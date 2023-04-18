@@ -21,17 +21,15 @@ var upgrader = websocket.Upgrader{
 }
 
 func WebSocketStartWriteMessage() {
-	for {
-		select {
-		case message := <-QC.WebSocketMessageBroadcast:
-			q.Q("got msg from WebSocketMessageBroadcast", len(QC.WebSocketClient))
-			for client := range QC.WebSocketClient {
-				if err := client.WriteJSON(message); err != nil {
-					q.Q("error: websocket", err)
-					continue
-				}
-				q.Q("websocket write to client", message)
+
+	for message := range QC.WebSocketMessageBroadcast {
+		q.Q("got msg from WebSocketMessageBroadcast", len(QC.WebSocketClient))
+		for client := range QC.WebSocketClient {
+			if err := client.WriteJSON(message); err != nil {
+				q.Q("error: websocket", err)
+				continue
 			}
+			q.Q("websocket write to client", message)
 		}
 	}
 }

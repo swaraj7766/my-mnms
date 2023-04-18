@@ -3,12 +3,12 @@ package mnms
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"mnms/pkg/simulator"
 	simnet "mnms/pkg/simulator/net"
 	atopyaml "mnms/pkg/simulator/yaml"
-	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -17,14 +17,13 @@ import (
 
 	"github.com/bitfield/script"
 	"github.com/qeof/q"
-	"github.com/sirupsen/logrus"
 )
 
 var adminToken string
 
 func init() {
-	q.O = "stderr"
-	q.P = ".*"
+	flag.StringVar(&q.O, "O", "stderr", "debug log output")
+	flag.StringVar(&q.P, "P", "", "debug log pattern")
 	var err error
 	adminToken, err = GetToken("admin")
 	if err != nil {
@@ -32,6 +31,7 @@ func init() {
 	}
 }
 
+/*
 func startTestSyslogServer() {
 	udpsock, err := net.ListenPacket("udp", ":60514") // run a test "remote" syslog server
 	if err != nil {
@@ -49,7 +49,7 @@ func startTestSyslogServer() {
 		}
 		q.Q("syslog input:", buf[:mlen])
 	}
-}
+}*/
 
 var simulatorList []*simulator.AtopGwdClient
 
@@ -57,7 +57,7 @@ func startSimulators() error {
 	startup := make(chan bool)
 	name, err := simnet.GetDefaultInterfaceName()
 	if err != nil {
-		logrus.Fatal(err)
+		return err
 	}
 	simmap := map[string]atopyaml.Simulator{}
 	simmap["group1"] = atopyaml.Simulator{Number: 5, DeviceType: "EH7506", StartPreFixIp: "192.168.11.1/24", MacAddress: "00-60-E9-18-11-11"}
@@ -96,7 +96,6 @@ func TestCluster(t *testing.T) {
 	//go startTestSyslogServer()
 
 	go func() { //run the root instance
-		//cmd := exec.Command("./mnmsctl/mnmsctl", "-n", "root", "-R", "-O", "root.log", "-rs", "localhost:60514")
 		cmd := exec.Command("./mnmsctl/mnmsctl", "-n", "root", "-R", "-O", "root.log")
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -116,7 +115,6 @@ func TestCluster(t *testing.T) {
 	for _, clientName := range clients {
 		go func(clientName string) {
 			q.Q("running a client node instance", clientName)
-			//cmd := exec.Command("./mnmsctl/mnmsctl", "-n", clientName, "-s", "-O", clientName+".log", "-r", "http://localhost:27182", "-nosyslog", "-notrap", "-nomqbr", "-fake", "-rs", "localhost:5514")
 			cmd := exec.Command("./mnmsctl/mnmsctl", "-n", clientName, "-s", "-O", clientName+".log", "-r", "http://localhost:27182", "-nosyslog", "-notrap", "-nomqbr", "-fake")
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -136,7 +134,8 @@ func TestCluster(t *testing.T) {
 	cmdinfo := make(map[string]CmdInfo)
 
 	// special "all" command should go to all clients
-	insertcmd("all scan gwd", &cmdinfo)
+	// no more all command skip it
+	//insertcmd("all scan gwd", &cmdinfo)
 
 	// snmp commands go to ip addresses. both clients will
 	// run them.
@@ -150,7 +149,7 @@ func TestCluster(t *testing.T) {
 	insertcmd("switch 02-42-C0-A8-64-80 admin default show ip", &cmdinfo)
 
 	// this command for non-existing device  will be retried and cancelled
-	insertcmd("config syslog 01-11-22-33-44-55 status 2", &cmdinfo)
+	insertcmd("config syslog 01-11-22-33-44-55 1 10.10.10.1 5514 1 1", &cmdinfo)
 
 	jsonBytes, err := json.Marshal(cmdinfo)
 	if err != nil {
@@ -166,12 +165,14 @@ func TestCluster(t *testing.T) {
 	if resp == nil {
 		t.Fatal("no resp")
 	}
-	t.Log(resp.Header)
+	//t.Log(resp.Header)
 	if resp.StatusCode != 200 {
 		q.Q("post returns bad status code", resp.StatusCode)
+		body, _ := ioutil.ReadAll(resp.Body)
+		t.Log(string(body))
 		t.Fatal(resp.StatusCode)
 	}
-
+	//safe closed
 	resp.Body.Close()
 
 	// let commands download to clients and run
@@ -193,14 +194,17 @@ func TestCluster(t *testing.T) {
 		q.Q("error status code from get", resp.StatusCode)
 		t.Fatal(resp.StatusCode)
 	}
-	t.Log(resp.StatusCode)
+	//t.Log(resp.StatusCode)
 	commands := make(map[string]CmdInfo)
 	err = json.NewDecoder(resp.Body).Decode(&commands)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp == nil {
+		t.Fatal("nil response")
+	}
 	q.Q("command status retrieved", commands)
-
+	// save close
 	resp.Body.Close()
 
 	//issue some new commands
@@ -225,9 +229,10 @@ func TestCluster(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Fatal()
 		}
-		t.Log(resp.Header)
+		//t.Log(resp.Header)
+		// save close
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 
 	//wait for a while to let the commands run
 	q.Q("issued switch show info commands")
@@ -249,8 +254,9 @@ func TestCluster(t *testing.T) {
 			t.Fatal(err)
 		}
 		q.Q("updated command status fetched", commands)
+		//save close
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 
 	// wait a bit more to see if the pending commands get cancelled
 	q.Q("wait for cancel of pending commands")
@@ -263,6 +269,7 @@ func TestCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp != nil {
+
 		if resp.StatusCode != 200 {
 			t.Fatal()
 		}
@@ -272,32 +279,14 @@ func TestCluster(t *testing.T) {
 			t.Fatal(err)
 		}
 		q.Q("fetched command status again", commands)
+		//save close
+		resp.Body.Close()
 	}
-	resp.Body.Close()
 
 	_, err = getDevices()
 	if err != nil {
 		t.Fatal("cannot get devices", err)
 	}
-
-	cmdinfo = make(map[string]CmdInfo)
-	insertcmd("all devices publish", &cmdinfo)
-	jsonBytes, err = json.Marshal(cmdinfo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	//resp, err = http.Post(url, "application/json", bytes.NewBuffer(jsonBytes))
-	resp, err = PostWithToken(url, adminToken, bytes.NewBuffer(jsonBytes))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp != nil {
-		if resp.StatusCode != 200 {
-			t.Fatal()
-		}
-		t.Log(resp.Header)
-	}
-	resp.Body.Close()
 
 	//wait for devices upload
 	q.Q("wait for devices to be published")
@@ -307,7 +296,7 @@ func TestCluster(t *testing.T) {
 	if err != nil {
 		t.Fatal("cannot get devices", err)
 	}
-
+	q.Q("starting simulators")
 	err = startSimulators()
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +329,7 @@ func TestCluster(t *testing.T) {
 	//listInterfaces()
 	time.Sleep(10 * time.Second)
 	q.Q("send gwd invite to refresh devices list")
-	GwdInvite()
+	_ = GwdInvite()
 	time.Sleep(10 * time.Second)
 
 	newDevs, err := getDevices()
@@ -353,17 +342,17 @@ func TestCluster(t *testing.T) {
 	if !ok {
 		t.Fatal("cannot find special MAC device")
 	}
-	latest, err = strconv.ParseInt(sdev.UnixTime, 10, 64)
+	latest, err = strconv.ParseInt(sdev.Timestamp, 10, 64)
 	if err != nil {
-		q.Q(sdev.UnixTime, err)
+		q.Q(sdev.Timestamp, err)
 		t.Fatal("strconv parseint fail", err)
 	}
 
 	for _, dev := range *newDevs {
 		if strings.HasPrefix(dev.ModelName, "Simu_") {
-			dts, err = strconv.ParseInt(dev.UnixTime, 10, 64)
+			dts, err = strconv.ParseInt(dev.Timestamp, 10, 64)
 			if err != nil {
-				q.Q(dev.UnixTime, err)
+				q.Q(dev.Timestamp, err)
 				t.Fatal("strconv parseint fail", err)
 			}
 			diff := latest - dts
@@ -380,7 +369,7 @@ func TestCluster(t *testing.T) {
 }
 
 func waitForRoot() error {
-	for i := 1; i < 4; i++ {
+	for i := 1; i < 20; i++ {
 		time.Sleep(2 * time.Second)
 		url := "http://localhost:27182/api"
 		//resp, err := http.Get(url)
@@ -410,10 +399,12 @@ func getDevices() (*map[string]DevInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+
 	devices := make(map[string]DevInfo)
 
 	if resp != nil {
+		//save close
+		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			return nil, fmt.Errorf("error: response status code %v", resp.StatusCode)
 		}

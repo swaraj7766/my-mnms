@@ -25,9 +25,16 @@ const syslogSettingTips =
 const SyslogSettingDrawer = () => {
   const dispatch = useDispatch();
   const [form] = Form.useForm();
-  const { visible, mac_address, model } = useSelector(
-    singleSyslogSettingSelector
-  );
+  const {
+    visible,
+    mac_address,
+    model,
+    logToFlash,
+    logLevel,
+    logToServer,
+    serverIP,
+    serverPort,
+  } = useSelector(singleSyslogSettingSelector);
 
   const onFinish = () => {
     form
@@ -53,21 +60,33 @@ const SyslogSettingDrawer = () => {
   };
   const onReset = () => {
     dispatch(closeSyslogSettingDrawer());
-    form.resetFields();
+    form.setFieldsValue({
+      logToFlash,
+      logLevel,
+      logToServer,
+      serverIP,
+      serverPort,
+    });
   };
 
   useEffect(() => {
     form.setFieldsValue({
-      logToFlash: true,
-      logLevel: 7,
-      logToServer: true,
-      serverIP: "",
-      serverPort: 514,
+      logToFlash,
+      logLevel,
+      logToServer,
+      serverIP,
+      serverPort,
     });
     return () => {
-      form.resetFields();
+      form.setFieldsValue({
+        logToFlash,
+        logLevel,
+        logToServer,
+        serverIP,
+        serverPort,
+      });
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [logToFlash, logLevel, logToServer, serverIP, serverPort]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Drawer

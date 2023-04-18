@@ -1,5 +1,6 @@
 import {
   ApartmentOutlined,
+  ClusterOutlined,
   CodeOutlined,
   DashboardOutlined,
   DesktopOutlined,
@@ -47,6 +48,11 @@ const routes = {
         path: "/eventlogs",
         name: "Logs",
         icon: <SnippetsOutlined />,
+      },
+      {
+        path: "/clusterinfo",
+        name: "Cluster Info",
+        icon: <ClusterOutlined/>,
       },
     ],
   },

@@ -14,6 +14,10 @@ import singleFwUpdate from "../features/singleDeviceConfigurations/updateFirmwar
 import socketControlSlice from "../features/socketControl/socketControlSlice";
 import topologySlice from "../features/topology/topologySlice";
 import usermgmtSlice from "../features/usermgmt/usermgmtSlice";
+import dashboardSlice from "../features/dashboard/dashboardSlice";
+import clusterInfoSlice from "../features/clusterInfo/clusterInfoSlice";
+import twoFactorAuthSlice from "../features/auth/twoFactorAuthSlice"
+import saveRunningConfigSlice from "../features/singleDeviceConfigurations/saveRunningConfigSlice";
 
 export const store = configureStore({
   reducer: {
@@ -32,6 +36,11 @@ export const store = configureStore({
     enableSNMPDevice: enableSNMPDeciceSlice.reducer,
     topology: topologySlice.reducer,
     eventLog: eventLogSlice.reducer,
+    dashboard: dashboardSlice.reducer,
+    clusterInfoData:clusterInfoSlice.reducer,
+    twoFactorAuthSlice:twoFactorAuthSlice.reducer,
+    // clusterInfoData: clusterInfoSlice.reducer,
+    runnuinfConfig: saveRunningConfigSlice.reducer,
   },
   devTools: process.env.NODE_ENV !== "production",
 });

@@ -11,6 +11,7 @@ import PageNotFound from "../../pages/PageNotFound";
 import PrivateRoute from "./PrivateRoute";
 import TopologyPage from "../../pages/topology/TopologyPage";
 import EventLogs from "../../pages/eventlogs/EventLogs";
+import ClusterInfo from "../../pages/cluster_info/ClusterInfo";
 
 const AppRoutes = () => {
   let element = useRoutes([
@@ -76,6 +77,14 @@ const AppRoutes = () => {
           element: (
             <PrivateRoute>
               <EventLogs />
+            </PrivateRoute>
+          ),
+        },
+        {
+          path: "clusterinfo",
+          element: (
+            <PrivateRoute>
+              <ClusterInfo />
             </PrivateRoute>
           ),
         },

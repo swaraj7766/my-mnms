@@ -4,7 +4,6 @@
 package yaml_test
 
 import (
-	"log"
 	"testing"
 	"time"
 
@@ -19,7 +18,7 @@ func TestMain(m *testing.M) {
 	var err error
 	ethName, err = net.GetDefaultInterfaceName()
 	if err != nil {
-		log.Fatal(err)
+
 	}
 	m.Run()
 
@@ -28,7 +27,7 @@ func TestSimulatorFile(t *testing.T) {
 
 	simulators, err := atopyaml.NewSimulatorFile("./test.yaml", ethName)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	for _, v := range simulators {
 		_ = v.StartUp()
@@ -44,7 +43,7 @@ func TestSimulator(t *testing.T) {
 	simmap["1"] = atopyaml.Simulator{Number: 5, DeviceType: "EH7506", StartPreFixIp: "192.168.6.1/24"}
 	simulators, err := atopyaml.NewSimulator(simmap, ethName)
 	if err != nil {
-		log.Fatal(err)
+		t.Fatal(err)
 	}
 	for _, v := range simulators {
 		_ = v.StartUp()

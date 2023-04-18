@@ -11,7 +11,7 @@ import {
   Upload,
 } from "antd";
 import * as dayjs from "dayjs";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import ModalResult from "../../components/debug/ModalResult";
 import {
@@ -19,6 +19,7 @@ import {
   debugCmdSelector,
   GetDebugCommandResult,
   RequestDebugCommand,
+  inputCommandChange,
 } from "../../features/debugPage/debugPageSlice";
 import { convertToJsonObject } from "../../utils/comman/dataMapping";
 import {
@@ -31,16 +32,12 @@ import {
 const DebugPage = () => {
   const dispatch = useDispatch();
   const { modal, message } = App.useApp();
-  const { cmdResponse } = useSelector(debugCmdSelector);
-  const [cmdValue, setCmdValue] = useState(null);
+  const { cmdResponse, inputCommand } = useSelector(debugCmdSelector);
   const [cmdResult, setCmdResult] = useState(null);
-  const handleEditorChange = useCallback((value) => {
-    setCmdValue(value);
-  }, []);
 
   const handleClickRequestCommand = () => {
     setCmdResult(null);
-    const cmdJsonObject = convertToJsonObject(cmdValue);
+    const cmdJsonObject = convertToJsonObject(inputCommand);
     dispatch(RequestDebugCommand(cmdJsonObject));
   };
 
@@ -81,7 +78,7 @@ const DebugPage = () => {
         reader.onload = async (e) => {
           const text = e.target.result;
           console.log(text);
-          setCmdValue(text);
+          dispatch(inputCommandChange(text));
         };
         reader.readAsText(file.originFileObj);
       } else if (file.status === "error") {
@@ -146,8 +143,8 @@ const DebugPage = () => {
         >
           <Input.TextArea
             rows={15}
-            value={cmdValue}
-            onChange={(e) => handleEditorChange(e.target.value)}
+            value={inputCommand}
+            onChange={(e) => dispatch(inputCommandChange(e.target.value))}
           />
         </Card>
       </Col>
@@ -155,7 +152,6 @@ const DebugPage = () => {
         <Card
           bordered={false}
           title="Response Result"
-          style={{ maxHeight: "460px" }}
           extra={
             <Space>
               <Button type="primary" onClick={downloadFile}>
@@ -167,7 +163,6 @@ const DebugPage = () => {
           <List
             itemLayout="horizontal"
             dataSource={cmdResponse}
-            bordered
             renderItem={(item) => (
               <List.Item
                 extra={
@@ -183,8 +178,10 @@ const DebugPage = () => {
                 <List.Item.Meta
                   title={item}
                   description={
+                    Array.isArray(cmdResult) &&
+                    cmdResult.length !== 0 &&
                     cmdResult &&
-                    cmdResult[0].command === item && (
+                    cmdResult[0].command === item ? (
                       <Space direction="vertical" style={{ width: "100%" }}>
                         <ModalResult
                           title="Command:"
@@ -209,7 +206,8 @@ const DebugPage = () => {
                         <ModalResult
                           title="Status:"
                           value={
-                            cmdResult[0].status === "" ? (
+                            cmdResult[0].status === "" ||
+                            cmdResult[0].status === "running" ? (
                               <Tag
                                 icon={<SyncOutlined spin />}
                                 color="processing"
@@ -225,10 +223,17 @@ const DebugPage = () => {
                               </Tag>
                             ) : (
                               <Tag icon={<CloseCircleOutlined />} color="error">
-                                error
+                                {cmdResult[0].status}
                               </Tag>
                             )
                           }
+                        />
+                      </Space>
+                    ) : (
+                      <Space direction="vertical" style={{ width: "100%" }}>
+                        <ModalResult
+                          title="Result:"
+                          value="NO result assigned"
                         />
                       </Space>
                     )

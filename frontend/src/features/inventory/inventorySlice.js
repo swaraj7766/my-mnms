@@ -1,5 +1,8 @@
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
 import protectedApis from "../../utils/apis/protectedApis";
+import { checkTimestampDiff } from "../../utils/comman/dataMapping";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export const getInventoryData = createAsyncThunk(
   "inventorySlice/getInventoryData",
@@ -9,7 +12,7 @@ export const getInventoryData = createAsyncThunk(
       const data = await response.data;
       let responseResult = data;
       if (response.status === 200) {
-        console.log(data);
+        await sleep(2000);
         return responseResult;
       }
     } catch (e) {
@@ -35,7 +38,7 @@ const inventorySlice = createSlice({
   extraReducers: (builder) => {
     builder
       .addCase(getInventoryData.fulfilled, (state, { payload }) => {
-        state.deviceData = Object.values(payload);
+        state.deviceData = checkTimestampDiff(Object.values(payload));
         state.scanning = false;
       })
       .addCase(getInventoryData.pending, (state, { payload }) => {

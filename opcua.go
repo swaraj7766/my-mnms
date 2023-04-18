@@ -288,16 +288,18 @@ func NewOpcuaClient() *OpcuaClient {
 		q.Q("Error creating PKI.")
 		DoExit(1)
 	}
-	return &OpcuaClient{}
+	return &OpcuaClient{timeout: time.Second * 3}
 }
 
 type OpcuaClient struct {
-	ch *client.Client
+	ch      *client.Client
+	timeout time.Duration
 }
 
 // Connect connect to endpointURL
 func (o *OpcuaClient) Connect(endpointURL string, opts ...client.Option) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 	ch, err := client.Dial(
 		ctx,
 		endpointURL,
@@ -317,17 +319,22 @@ func (o *OpcuaClient) checkConnection() error {
 
 // FindServers
 func (o *OpcuaClient) FindServers(request *ua.FindServersRequest) (*ua.FindServersResponse, error) {
-	return client.FindServers(context.Background(), request)
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	return client.FindServers(ctx, request)
 }
 
 // FindServers
 func (o *OpcuaClient) GetEndpoints(request *ua.GetEndpointsRequest) (*ua.GetEndpointsResponse, error) {
-	return client.GetEndpoints(context.Background(), request)
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
+	return client.GetEndpoints(ctx, request)
 }
 
 // Close
 func (o *OpcuaClient) Close() error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 	return o.ch.Close(ctx)
 }
 
@@ -337,7 +344,8 @@ func (o *OpcuaClient) WriteNodeID(req *ua.WriteRequest) (*ua.WriteResponse, erro
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 	return o.ch.Write(ctx, req)
 }
 
@@ -347,7 +355,8 @@ func (o *OpcuaClient) Browse(req *ua.BrowseRequest) (*ua.BrowseResponse, error) 
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.Browse(ctx, req)
 }
@@ -358,7 +367,8 @@ func (o *OpcuaClient) ReadNodeID(req *ua.ReadRequest) (*ua.ReadResponse, error) 
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.Read(ctx, req)
 
@@ -370,7 +380,8 @@ func (o *OpcuaClient) CreateSubscription(req *ua.CreateSubscriptionRequest) (*ua
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.CreateSubscription(ctx, req)
 
@@ -382,7 +393,8 @@ func (o *OpcuaClient) CreateMonitoredItems(req *ua.CreateMonitoredItemsRequest) 
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.CreateMonitoredItems(ctx, req)
 
@@ -394,7 +406,8 @@ func (o *OpcuaClient) Publish(req *ua.PublishRequest) (*ua.PublishResponse, erro
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.Publish(ctx, req)
 
@@ -406,7 +419,8 @@ func (o *OpcuaClient) DeleteMonitoredItems(req *ua.DeleteMonitoredItemsRequest) 
 	if err != nil {
 		return nil, err
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
+	defer cancel()
 
 	return o.ch.DeleteMonitoredItems(ctx, req)
 
@@ -414,10 +428,6 @@ func (o *OpcuaClient) DeleteMonitoredItems(req *ua.DeleteMonitoredItemsRequest) 
 
 // ReadVariableAttributes read VariableAttributes
 func (o *OpcuaClient) ReadVariableAttributes(id ua.NodeID) (ua.VariableAttributes, error) {
-	err := o.checkConnection()
-	if err != nil {
-		return ua.VariableAttributes{}, err
-	}
 	req := &ua.ReadRequest{
 		NodesToRead: []ua.ReadValueID{
 			{NodeID: id, AttributeID: ua.AttributeIDNodeID},
@@ -440,7 +450,7 @@ func (o *OpcuaClient) ReadVariableAttributes(id ua.NodeID) (ua.VariableAttribute
 		return ua.VariableAttributes{}, err
 	}
 	value := ua.VariableAttributes{}
-	for i, _ := range res.Results {
+	for i := range res.Results {
 		if res.Results[i].StatusCode.IsGood() {
 			switch i {
 			case 0:
@@ -514,10 +524,6 @@ func (o *OpcuaClient) ReadVariableAttributes(id ua.NodeID) (ua.VariableAttribute
 
 // BrowseReference Browse ReferenceDescription
 func (o *OpcuaClient) BrowseReference(id ua.NodeID, dir ua.BrowseDirection) ([]ua.ReferenceDescription, error) {
-	err := o.checkConnection()
-	if err != nil {
-		return []ua.ReferenceDescription{}, err
-	}
 	req := &ua.BrowseRequest{
 		NodesToBrowse: []ua.BrowseDescription{
 			{
@@ -553,6 +559,15 @@ func CheckOpcuaClient() error {
 	return nil
 }
 
+// Opcua connect setting.
+//
+// Usage : opcua connect [url]
+//
+//	[url]         : connect to url
+//
+// Example :
+//
+//	opcua connect opc.tcp://127.0.0.1:4840
 func OpcuaConnectCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -564,7 +579,7 @@ func OpcuaConnectCmd(cmdinfo *CmdInfo) *CmdInfo {
 	opclient := NewOpcuaClient()
 	err := opclient.Connect(url, client.WithInsecureSkipVerify(), client.WithClientCertificateFile("./pki/client.crt", "./pki/client.key"))
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	opcuaclient = opclient
@@ -572,10 +587,19 @@ func OpcuaConnectCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
+// Opcua read setting.
+//
+// Usage : opcua read [node id]
+//
+//	[node id]     : opcua node id
+//
+// Example :
+//
+//	opcua read i=1002
 func OpcuaReadCmd(cmdinfo *CmdInfo) *CmdInfo {
 	err := CheckOpcuaClient()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmd := cmdinfo.Command
@@ -588,12 +612,12 @@ func OpcuaReadCmd(cmdinfo *CmdInfo) *CmdInfo {
 	nodeid := ua.ParseNodeID(id)
 	v, err := opcuaclient.ReadVariableAttributes(nodeid)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
@@ -602,10 +626,19 @@ func OpcuaReadCmd(cmdinfo *CmdInfo) *CmdInfo {
 	return cmdinfo
 }
 
+// Opcua browse setting.
+//
+// Usage : opcua browse [node id]
+//
+//	[node id]     : opcua node id
+//
+// Example :
+//
+//	opcua browse i=85
 func OpcuaBrowseReferenceCmd(cmdinfo *CmdInfo) *CmdInfo {
 	err := CheckOpcuaClient()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmd := cmdinfo.Command
@@ -618,12 +651,12 @@ func OpcuaBrowseReferenceCmd(cmdinfo *CmdInfo) *CmdInfo {
 	nodeid := ua.ParseNodeID(id)
 	v, err := opcuaclient.BrowseReference(nodeid, ua.BrowseDirectionForward)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"
@@ -635,10 +668,19 @@ func OpcuaBrowseReferenceCmd(cmdinfo *CmdInfo) *CmdInfo {
 var opcuaNotificationFlag = false
 var opcuMap = map[uint32]ua.NodeID{}
 
+// Opcua subcribe setting.
+//
+// Usage : opcua sub [node id]
+//
+//	[node id]     : opcua node id
+//
+// Example :
+//
+//	opcua sub i=1002
 func OpcuaSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	err := CheckOpcuaClient()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmd := cmdinfo.Command
@@ -655,7 +697,7 @@ func OpcuaSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	res, err := opcuaclient.CreateSubscription(req)
 	if err != nil {
-		cmdinfo.Status = err.Error() + ", Error creating subscription"
+		cmdinfo.Status = "error: " + err.Error() + ", Error creating subscription"
 		return cmdinfo
 	}
 	id := ws[2]
@@ -679,7 +721,7 @@ func OpcuaSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	res2, err := opcuaclient.CreateMonitoredItems(req2)
 	if err != nil {
-		cmdinfo.Status = err.Error() + ",Error creating item"
+		cmdinfo.Status = "error: " + err.Error() + ",Error creating item"
 		return cmdinfo
 	}
 	_ = res2
@@ -742,10 +784,21 @@ func runOpcuaDataChangeNotification() {
 }
 
 // DeleteOpcuSubscribeCmd
+
+// Opcua delete subcribe setting.
+//
+// Usage : opcua deletesub [sub id] [monitor id]
+//
+//	[sub id]      : subscribe id
+//	[monitor id]  : monitored item id
+//
+// Example :
+//
+//	opcua deletesub 1 1
 func OpcuDeleteSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	err := CheckOpcuaClient()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmd := cmdinfo.Command
@@ -756,19 +809,19 @@ func OpcuDeleteSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 	}
 	subid, err := strconv.Atoi(ws[2])
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	monid, err := strconv.Atoi(ws[3])
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	req := &ua.DeleteMonitoredItemsRequest{SubscriptionID: uint32(subid), MonitoredItemIDs: []uint32{uint32(monid)}}
 
 	res, err := opcuaclient.DeleteMonitoredItems(req)
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	for _, r := range res.Results {
@@ -783,10 +836,18 @@ func OpcuDeleteSubscribeCmd(cmdinfo *CmdInfo) *CmdInfo {
 }
 
 // OpcuCloseCmd
+
+// Close opcua.
+//
+// Usage : opcua close
+//
+// Example :
+//
+//	opcua close
 func OpcuCloseCmd(cmdinfo *CmdInfo) *CmdInfo {
 	err := CheckOpcuaClient()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmd := cmdinfo.Command
@@ -798,7 +859,7 @@ func OpcuCloseCmd(cmdinfo *CmdInfo) *CmdInfo {
 
 	err = opcuaclient.Close()
 	if err != nil {
-		cmdinfo.Status = err.Error()
+		cmdinfo.Status = "error: " + err.Error()
 		return cmdinfo
 	}
 	cmdinfo.Status = "ok"

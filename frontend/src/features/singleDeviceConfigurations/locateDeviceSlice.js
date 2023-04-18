@@ -6,9 +6,7 @@ export const RequestLocateDevice = createAsyncThunk(
   async (params, thunkAPI) => {
     try {
       const response = await protectedApis.post("/api/v1/commands", {
-        [`beep ${params.mac}`]: {
-          command: `beep ${params.mac} ${params.ipaddress}`,
-        },
+        [`beep ${params.mac} ${params.ipaddress}`]: {},
       });
       const data = await response.data;
       let responseResult = data;

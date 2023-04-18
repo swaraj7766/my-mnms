@@ -66,6 +66,7 @@ type Firmware struct {
 	filesize   int64
 	firmStatus FirmStatus
 	r          io.Reader
+	mac        string
 }
 type FirmStatus struct {
 	Status       string
@@ -145,11 +146,16 @@ func (f *Firmware) Upgrading(fileformat string, file string) error {
 			return
 		}
 
+		packetCount := 0
+		var unfinishProcess map[int]int = map[int]int{30: 30, 60: 60, 90: 90, 100: 100}
 		//send file
 		buf := make([]byte, 0, size)
 		for {
 			// wait uploading fw
 			n, readerr := io.ReadFull(f.r, buf[:cap(buf)])
+			// calculate percent
+			packetCount++
+			unfinishProcess = f.calculateProcess(packetCount, unfinishProcess)
 			// uploading process
 			buf = buf[:n]
 			_, err := conn.Write(buf)
@@ -221,6 +227,30 @@ func (f *Firmware) waitResponse(con net.Conn, w fwStatus) error {
 	}
 }
 
+// calculateProcess calculate file percent
+func (f *Firmware) calculateProcess(packetCount int, unfinishProcess map[int]int) map[int]int {
+	proc := packetCount * 100 / int(math.Ceil(float64(f.filesize)/512))
+	progressPercent := int(math.Floor(float64(proc)*100) / 100)
+	// send percent
+	_, ok := unfinishProcess[progressPercent]
+	if ok {
+		delete(unfinishProcess, progressPercent)
+		if progressPercent == 100 {
+			err := SendSyslog(LOG_ALERT, "firmware", f.mac+" upgrading device")
+			if err != nil {
+				q.Q(err)
+			}
+		} else {
+			err := SendSyslog(LOG_ALERT, "firmware", f.mac+" uploading file to device "+strconv.Itoa(progressPercent)+"%")
+			if err != nil {
+				q.Q(err)
+			}
+		}
+		q.Q(progressPercent)
+	}
+	return unfinishProcess
+}
+
 func downloadRequest(filesize int64) []byte {
 	dl_request := firmwarePacket()
 	//dl_request[32] ~ dl_request[35] :save file size
@@ -236,6 +266,11 @@ func downloadURLFile(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, errors.New("resp is nil")
+	}
+
+	// save close, already check resp is not nil
 	defer resp.Body.Close()
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
@@ -263,10 +298,17 @@ func downloadURLFile(url string) ([]byte, error) {
 	return dataunzip, nil
 }
 
-// commands :
+// Upgrade firmware.
 //
-//	firmware 00-60-E9-1E-93-D4 https://https://www.atoponline.com/.../logo-new-thinned.svg
-//	firmware 00-60-E9-1E-93-D4 file:///C:/Users/testfile.txt
+// Usage : firmware [mac address] [file url]
+//
+//	[mac address] : target device mac address
+//	[file url]    : file url
+//
+// Example :
+//
+//	firmware AA-BB-CC-DD-EE-FF https://https://www.atoponline.com/.../EHG750X-K770A770.zip
+//	firmware AA-BB-CC-DD-EE-FF file:///C:/Users/testfile.txt
 func FirmwareCmd(cmdinfo *CmdInfo) *CmdInfo {
 	cmd := cmdinfo.Command
 	ws := strings.Split(cmd, " ")
@@ -275,14 +317,29 @@ func FirmwareCmd(cmdinfo *CmdInfo) *CmdInfo {
 		cmdinfo.Status = "error: invalid command"
 		return cmdinfo
 	}
-
 	devId := ws[1]
+	cmdinfo.DevId = devId
 	dev, err := FindDev(devId)
 	if err != nil {
 		cmdinfo.Status = "pending: device not found"
 		return cmdinfo
 	}
+	b, err := DevIsLocked(devId)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
+	if b {
+		cmdinfo.Status = fmt.Sprintf("error:%v", "device is upgrading")
+		return cmdinfo
+	}
 	ip := dev.IPAddress
+	// validate ip
+	err = CheckIPAddress(ip)
+	if err != nil {
+		cmdinfo.Status = fmt.Sprintf("error:%v", err)
+		return cmdinfo
+	}
 
 	file := ws[2]
 	fileformat := ""
@@ -304,16 +361,23 @@ func FirmwareCmd(cmdinfo *CmdInfo) *CmdInfo {
 
 	// create new  device for firmware
 	fs := FirmStatus{Status: ""}
-	device := Firmware{ip: ip, firmStatus: fs}
+	device := Firmware{ip: ip, firmStatus: fs, mac: devId}
+	cmdinfo.Status = running.String()
+	go func(cmdinfo CmdInfo) {
+		LockDev(devId)
+		defer func() {
+			QC.CmdMutex.Lock()
+			QC.CmdData[cmdinfo.Command] = cmdinfo
+			QC.CmdMutex.Unlock()
+			unLockDev(devId)
+		}()
 
-	go func() {
 		err = device.Upgrading(fileformat, file)
 		if err != nil {
 			fmt.Println(err.Error())
 		}
 
 		var messages string = ""
-
 		for {
 			time.Sleep(time.Duration(time.Second * 1))
 			r, err := device.GetProcessStatus()
@@ -321,7 +385,8 @@ func FirmwareCmd(cmdinfo *CmdInfo) *CmdInfo {
 			if r == "Error" {
 				messages = "device:" + ip + ",Process:" + r + ",err:" + err.Error()
 				q.Q(messages)
-				err := SendSyslog(LOG_ALERT, "firmware", r)
+				cmdinfo.Status = fmt.Sprintf("error:%v", "upgrading fail,Please check frimware version whether mapping to device")
+				err := SendSyslog(LOG_ALERT, "firmware", devId+" "+r)
 				if err != nil {
 					q.Q(err)
 				}
@@ -330,14 +395,14 @@ func FirmwareCmd(cmdinfo *CmdInfo) *CmdInfo {
 			if r == "Complete" {
 				messages = "device:" + ip + ",Process:" + r
 				q.Q(messages)
-				err := SendSyslog(LOG_ALERT, "firmware", r)
+				cmdinfo.Status = "ok"
+				err := SendSyslog(LOG_ALERT, "firmware", devId+" "+r)
 				if err != nil {
 					q.Q(err)
 				}
 				return
 			}
 		}
-	}()
-	cmdinfo.Status = "ok"
+	}(*cmdinfo)
 	return cmdinfo
 }
